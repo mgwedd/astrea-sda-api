@@ -23,6 +23,7 @@
   - All vectors in conjunction, look angle, or dot/cross products must be transformed into the **same frame** at the **same epoch** before calculation.
 - **No Synthetic Physics Data**: Never mock confidence scores, delta-V residuals, or orbital states in production engine paths. If multi-epoch TLE data is unavailable, return an explicit error.
 - **Runtime Safety**: Never block the Tokio async reactor with SGP4 loops. Offload CPU-heavy propagation to Rayon threadpools (`MAX_EXPRESS_CORES` / `MAX_HEAVY_CORES`).
+- **Mathematical Specification Maintenance**: [`ASTRODYNAMICS_FORMULAS.md`](ASTRODYNAMICS_FORMULAS.md) is the single source of mathematical truth for all astrodynamical calculations in this repository. It **must** be maintained in exact synchronization whenever astrodynamic algorithms in `src/services/` (or related models and handlers) are maintained, fixed, refactored, or added. Any new mathematical endpoint or physics routine requires full documentation of its formulas, coordinate frames, and numerical tolerances in `ASTRODYNAMICS_FORMULAS.md`.
 
 ---
 

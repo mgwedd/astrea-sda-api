@@ -185,6 +185,63 @@
         }
       }
     },
+    "/v1/conjunctions/collision-probability": {
+      "post": {
+        "tags": [
+          "Astrodynamics"
+        ],
+        "summary": "Calculate Conjunction Collision Probability (Pc)",
+        "description": "Computes 2D encounter-plane collision probability (Pc) using Foster's algorithm given miss distance, relative velocity, hard-body radius, and combined position covariance uncertainty. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).",
+        "operationId": "calculateCollisionProbability",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollisionProbabilityRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Collision probability computed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollisionProbabilityResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request payload",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Missing or invalid JWT token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/v1/conjunctions/search": {
       "get": {
         "tags": [
@@ -479,6 +536,88 @@
         ]
       }
     },
+    "/v1/satellites/decay-watch": {
+      "get": {
+        "tags": [
+          "Astrodynamics"
+        ],
+        "summary": "Atmospheric Drag & Orbital Decay Re-Entry Watch",
+        "description": "Scans the satellite catalog for debris and satellites experiencing severe atmospheric drag or nearing uncontrolled atmospheric re-entry. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).",
+        "operationId": "getDecayWatch",
+        "parameters": [
+          {
+            "name": "max_perigee_km",
+            "in": "query",
+            "description": "Maximum perigee altitude threshold in km to flag re-entry hazard (default: 300.0 km)",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "format": "double",
+              "nullable": true
+            }
+          },
+          {
+            "name": "min_bstar",
+            "in": "query",
+            "description": "Minimum B* atmospheric drag coefficient threshold (default: 0.0001)",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "format": "double",
+              "nullable": true
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of decaying objects to return (default: 50, max: 500)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "nullable": true,
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Decay watch scan completed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecayWatchResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Missing or invalid JWT token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal calculation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/v1/satellites/overhead": {
       "get": {
         "tags": [
@@ -740,6 +879,65 @@
           },
           "403": {
             "description": "Forbidden - Insufficient role permissions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Satellite not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/v1/satellites/{id}/decay-risk": {
+      "get": {
+        "tags": [
+          "Satellites"
+        ],
+        "summary": "Get Satellite Atmospheric Drag & Decay Risk",
+        "description": "Evaluates perigee/apogee altitude, B* atmospheric drag decay rate, remaining orbital lifetime, and uncontrolled re-entry risk score. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).",
+        "operationId": "getSatelliteDecayRisk",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Satellite unique UUID identifier",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Satellite orbital decay risk assessed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SatelliteDecayRiskResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Missing or invalid JWT token",
             "content": {
               "application/json": {
                 "schema": {
@@ -1368,6 +1566,311 @@
         ]
       }
     },
+    "/v1/satellites/{id}/passes": {
+      "get": {
+        "tags": [
+          "Satellites"
+        ],
+        "summary": "Schedule Ground Station Satellite Passes",
+        "description": "Computes multi-day pass prediction schedule (AOS, TCA, LOS, elevation, azimuth, duration, optical visibility, visual magnitude). Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).",
+        "operationId": "getSatellitePasses",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Satellite unique UUID identifier",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "lat",
+            "in": "query",
+            "description": "Observer latitude in decimal degrees (-90.0 to 90.0)",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          {
+            "name": "lon",
+            "in": "query",
+            "description": "Observer longitude in decimal degrees (-180.0 to 180.0)",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          {
+            "name": "alt",
+            "in": "query",
+            "description": "Observer altitude above sea level in meters (default: 0.0 m)",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "format": "double",
+              "nullable": true
+            }
+          },
+          {
+            "name": "threshold_deg",
+            "in": "query",
+            "description": "Minimum elevation angle threshold in degrees (default: 5.0 deg)",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "format": "double",
+              "nullable": true
+            }
+          },
+          {
+            "name": "duration_days",
+            "in": "query",
+            "description": "Forecast schedule window in days (default: 3 days, max: 14)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "nullable": true,
+              "minimum": 0
+            }
+          },
+          {
+            "name": "visible_only",
+            "in": "query",
+            "description": "Filter for only visually observable passes in twilight/darkness (default: false)",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "nullable": true
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "description": "UTC timestamp to start pass schedule forecast from (defaults to current time if omitted)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Satellite pass schedule computed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PassScheduleResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Missing or invalid JWT token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Satellite not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/v1/satellites/{id}/relative-motion": {
+      "get": {
+        "tags": [
+          "Satellites"
+        ],
+        "summary": "Compute Satellite Relative Motion & RPO",
+        "description": "Computes relative position, velocity vectors, range rate, and RPO regime in the Local-Vertical Local-Horizontal (LVLH / Hill's) frame between two satellites. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).",
+        "operationId": "getRelativeMotion",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Primary satellite unique UUID identifier",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_id",
+            "in": "query",
+            "description": "Target / secondary satellite unique UUID identifier",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "time",
+            "in": "query",
+            "description": "UTC timestamp for calculation epoch (defaults to current time if omitted)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "nullable": true
+            }
+          },
+          {
+            "name": "duration_minutes",
+            "in": "query",
+            "description": "Relative motion trajectory duration in minutes (default: 0, max: 1440)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "nullable": true,
+              "minimum": 0
+            }
+          },
+          {
+            "name": "step_seconds",
+            "in": "query",
+            "description": "Step sampling interval in seconds (default: 60 secs, min: 5, max: 300)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "nullable": true,
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Relative motion and RPO computed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelativeMotionResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Missing or invalid JWT token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Satellite not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/v1/satellites/{id}/state": {
+      "get": {
+        "tags": [
+          "Satellites"
+        ],
+        "summary": "Get Instantaneous State Vector & Keplerian Elements",
+        "description": "Computes ECI (TEME), ECEF, Geodetic state vectors and osculating Keplerian orbital elements at an exact epoch. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).",
+        "operationId": "getSatelliteState",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Satellite unique UUID identifier",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "epoch",
+            "in": "query",
+            "description": "UTC timestamp for calculation epoch (defaults to current time if omitted)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Satellite state vector computed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SatelliteStateResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Missing or invalid JWT token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Satellite not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/v1/transits/lunar": {
       "get": {
         "tags": [
@@ -1765,6 +2268,73 @@
           }
         }
       },
+      "CollisionProbabilityRequest": {
+        "type": "object",
+        "required": [
+          "missDistanceKm",
+          "relativeVelocityKms"
+        ],
+        "properties": {
+          "combinedPositionUncertaintyM": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "hardBodyRadiusM": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "missDistanceKm": {
+            "type": "number",
+            "format": "double"
+          },
+          "relativeVelocityKms": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "CollisionProbabilityResponse": {
+        "type": "object",
+        "required": [
+          "missDistanceKm",
+          "relativeVelocityKms",
+          "hardBodyRadiusM",
+          "combinedUncertaintyM",
+          "collisionProbability",
+          "riskCategory",
+          "recommendation"
+        ],
+        "properties": {
+          "collisionProbability": {
+            "type": "number",
+            "format": "double"
+          },
+          "combinedUncertaintyM": {
+            "type": "number",
+            "format": "double"
+          },
+          "hardBodyRadiusM": {
+            "type": "number",
+            "format": "double"
+          },
+          "missDistanceKm": {
+            "type": "number",
+            "format": "double"
+          },
+          "recommendation": {
+            "type": "string"
+          },
+          "relativeVelocityKms": {
+            "type": "number",
+            "format": "double"
+          },
+          "riskCategory": {
+            "type": "string"
+          }
+        }
+      },
       "ConjunctionMatch": {
         "type": "object",
         "required": [
@@ -1779,6 +2349,11 @@
             "type": "string",
             "format": "date-time"
           },
+          "collisionProbability": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
           "minDistanceKm": {
             "type": "number",
             "format": "double"
@@ -1786,6 +2361,10 @@
           "relativeVelocityKms": {
             "type": "number",
             "format": "double"
+          },
+          "riskCategory": {
+            "type": "string",
+            "nullable": true
           },
           "satelliteA": {
             "$ref": "#/components/schemas/SatelliteSummary"
@@ -1840,6 +2419,40 @@
           },
           "name": {
             "type": "string"
+          }
+        }
+      },
+      "DecayWatchResponse": {
+        "type": "object",
+        "required": [
+          "scannedSatellitesCount",
+          "decayingSatellitesFound",
+          "thresholdPerigeeKm",
+          "thresholdBstar",
+          "objects"
+        ],
+        "properties": {
+          "decayingSatellitesFound": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "objects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SatelliteDecayRiskResponse"
+            }
+          },
+          "scannedSatellitesCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "thresholdBstar": {
+            "type": "number",
+            "format": "double"
+          },
+          "thresholdPerigeeKm": {
+            "type": "number",
+            "format": "double"
           }
         }
       },
@@ -2102,6 +2715,63 @@
           }
         }
       },
+      "KeplerianElements": {
+        "type": "object",
+        "required": [
+          "semiMajorAxisKm",
+          "eccentricity",
+          "inclinationDeg",
+          "raanDeg",
+          "argOfPerigeeDeg",
+          "trueAnomalyDeg",
+          "meanAnomalyDeg",
+          "orbitalPeriodMinutes",
+          "perigeeAltitudeKm",
+          "apogeeAltitudeKm"
+        ],
+        "properties": {
+          "apogeeAltitudeKm": {
+            "type": "number",
+            "format": "double"
+          },
+          "argOfPerigeeDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "eccentricity": {
+            "type": "number",
+            "format": "double"
+          },
+          "inclinationDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "meanAnomalyDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "orbitalPeriodMinutes": {
+            "type": "number",
+            "format": "double"
+          },
+          "perigeeAltitudeKm": {
+            "type": "number",
+            "format": "double"
+          },
+          "raanDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "semiMajorAxisKm": {
+            "type": "number",
+            "format": "double"
+          },
+          "trueAnomalyDeg": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
       "LightingState": {
         "type": "string",
         "enum": [
@@ -2330,6 +3000,59 @@
           }
         }
       },
+      "PassScheduleResponse": {
+        "type": "object",
+        "required": [
+          "satelliteId",
+          "satelliteName",
+          "observerLat",
+          "observerLon",
+          "observerAltM",
+          "elevationThresholdDeg",
+          "forecastDays",
+          "passesFound",
+          "passes"
+        ],
+        "properties": {
+          "elevationThresholdDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "forecastDays": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "observerAltM": {
+            "type": "number",
+            "format": "double"
+          },
+          "observerLat": {
+            "type": "number",
+            "format": "double"
+          },
+          "observerLon": {
+            "type": "number",
+            "format": "double"
+          },
+          "passes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SatellitePass"
+            }
+          },
+          "passesFound": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "satelliteId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "satelliteName": {
+            "type": "string"
+          }
+        }
+      },
       "PipelineGroupSyncDetail": {
         "type": "object",
         "required": [
@@ -2415,6 +3138,114 @@
           }
         }
       },
+      "RelativeMotionPoint": {
+        "type": "object",
+        "required": [
+          "timestamp",
+          "radialKm",
+          "inTrackKm",
+          "crossTrackKm",
+          "rangeKm",
+          "rangeRateKms"
+        ],
+        "properties": {
+          "crossTrackKm": {
+            "type": "number",
+            "format": "double"
+          },
+          "inTrackKm": {
+            "type": "number",
+            "format": "double"
+          },
+          "radialKm": {
+            "type": "number",
+            "format": "double"
+          },
+          "rangeKm": {
+            "type": "number",
+            "format": "double"
+          },
+          "rangeRateKms": {
+            "type": "number",
+            "format": "double"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "RelativeMotionResponse": {
+        "type": "object",
+        "required": [
+          "primarySatellite",
+          "targetSatellite",
+          "epoch",
+          "relativeDistanceKm",
+          "rangeRateKms",
+          "radialDistanceKm",
+          "inTrackDistanceKm",
+          "crossTrackDistanceKm",
+          "radialVelocityKms",
+          "inTrackVelocityKms",
+          "crossTrackVelocityKms",
+          "rpoRegime"
+        ],
+        "properties": {
+          "crossTrackDistanceKm": {
+            "type": "number",
+            "format": "double"
+          },
+          "crossTrackVelocityKms": {
+            "type": "number",
+            "format": "double"
+          },
+          "epoch": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "inTrackDistanceKm": {
+            "type": "number",
+            "format": "double"
+          },
+          "inTrackVelocityKms": {
+            "type": "number",
+            "format": "double"
+          },
+          "primarySatellite": {
+            "$ref": "#/components/schemas/SatelliteSummary"
+          },
+          "radialDistanceKm": {
+            "type": "number",
+            "format": "double"
+          },
+          "radialVelocityKms": {
+            "type": "number",
+            "format": "double"
+          },
+          "rangeRateKms": {
+            "type": "number",
+            "format": "double"
+          },
+          "relativeDistanceKm": {
+            "type": "number",
+            "format": "double"
+          },
+          "rpoRegime": {
+            "type": "string"
+          },
+          "targetSatellite": {
+            "$ref": "#/components/schemas/SatelliteSummary"
+          },
+          "trajectory": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RelativeMotionPoint"
+            },
+            "nullable": true
+          }
+        }
+      },
       "Satellite": {
         "type": "object",
         "required": [
@@ -2442,6 +3273,204 @@
           },
           "tle": {
             "$ref": "#/components/schemas/Tle"
+          }
+        }
+      },
+      "SatelliteDecayRiskResponse": {
+        "type": "object",
+        "required": [
+          "satelliteId",
+          "satelliteName",
+          "perigeeAltitudeKm",
+          "apogeeAltitudeKm",
+          "bstarDrag",
+          "meanMotionDerivativeRevDay2",
+          "decayStatus",
+          "reentryRiskScore"
+        ],
+        "properties": {
+          "apogeeAltitudeKm": {
+            "type": "number",
+            "format": "double"
+          },
+          "bstarDrag": {
+            "type": "number",
+            "format": "double"
+          },
+          "decayStatus": {
+            "type": "string"
+          },
+          "meanMotionDerivativeRevDay2": {
+            "type": "number",
+            "format": "double"
+          },
+          "orbitalLifetimeDaysEstimate": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "perigeeAltitudeKm": {
+            "type": "number",
+            "format": "double"
+          },
+          "reentryRiskScore": {
+            "type": "number",
+            "format": "double"
+          },
+          "satelliteId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "satelliteName": {
+            "type": "string"
+          }
+        }
+      },
+      "SatellitePass": {
+        "type": "object",
+        "required": [
+          "passId",
+          "aosTime",
+          "aosAzimuthDeg",
+          "aosElevationDeg",
+          "tcaTime",
+          "tcaAzimuthDeg",
+          "maxElevationDeg",
+          "tcaRangeKm",
+          "losTime",
+          "losAzimuthDeg",
+          "losElevationDeg",
+          "durationSeconds",
+          "isVisible"
+        ],
+        "properties": {
+          "aosAzimuthDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "aosElevationDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "aosTime": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "durationSeconds": {
+            "type": "number",
+            "format": "double"
+          },
+          "isVisible": {
+            "type": "boolean"
+          },
+          "losAzimuthDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "losElevationDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "losTime": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "maxElevationDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "passId": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "tcaAzimuthDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "tcaRangeKm": {
+            "type": "number",
+            "format": "double"
+          },
+          "tcaTime": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "visualMagnitude": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          }
+        }
+      },
+      "SatelliteStateResponse": {
+        "type": "object",
+        "required": [
+          "satelliteId",
+          "satelliteName",
+          "epoch",
+          "positionEciKm",
+          "velocityEciKms",
+          "positionEcefKm",
+          "velocityEcefKms",
+          "latitudeDeg",
+          "longitudeDeg",
+          "altitudeKm",
+          "keplerianElements"
+        ],
+        "properties": {
+          "altitudeKm": {
+            "type": "number",
+            "format": "double"
+          },
+          "epoch": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "keplerianElements": {
+            "$ref": "#/components/schemas/KeplerianElements"
+          },
+          "latitudeDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "longitudeDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "positionEcefKm": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "positionEciKm": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "satelliteId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "satelliteName": {
+            "type": "string"
+          },
+          "velocityEcefKms": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "velocityEciKms": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            }
           }
         }
       },

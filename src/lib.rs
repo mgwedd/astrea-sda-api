@@ -50,6 +50,11 @@ impl Modify for SecurityAddon {
         handlers::satellite_handler::trigger_pipeline_sync,
         handlers::satellite_handler::get_overhead,
         handlers::satellite_handler::get_next_visible,
+        handlers::satellite_handler::get_satellite_passes,
+        handlers::satellite_handler::get_relative_motion,
+        handlers::satellite_handler::get_satellite_state,
+        handlers::satellite_handler::get_satellite_decay_risk,
+        handlers::satellite_handler::get_decay_watch,
         handlers::satellite_handler::get_ground_track,
         handlers::satellite_handler::get_satellite_illumination,
         handlers::satellite_handler::get_satellite_doppler,
@@ -58,6 +63,7 @@ impl Modify for SecurityAddon {
         handlers::satellite_handler::get_solar_transits,
         handlers::satellite_handler::get_lunar_transits,
         handlers::satellite_handler::search_conjunctions,
+        handlers::satellite_handler::calculate_collision_probability,
     ),
     components(
         schemas(
@@ -74,6 +80,16 @@ impl Modify for SecurityAddon {
             models::UpdateSatelliteDto,
             models::OverheadResponse,
             models::NextVisiblePassResponse,
+            models::SatellitePass,
+            models::PassScheduleResponse,
+            models::RelativeMotionPoint,
+            models::RelativeMotionResponse,
+            models::KeplerianElements,
+            models::SatelliteStateResponse,
+            models::SatelliteDecayRiskResponse,
+            models::DecayWatchResponse,
+            models::CollisionProbabilityRequest,
+            models::CollisionProbabilityResponse,
             models::GroundTrackResponse,
             models::GroundTrackPoint,
             models::GeoJsonFeature,
@@ -160,10 +176,28 @@ pub fn create_router_with_auth_and_limiter(
         )
         .route("/satellites/overhead", get(handlers::get_overhead))
         .route("/astrodynamics/overhead", get(handlers::get_overhead))
+        .route("/satellites/decay-watch", get(handlers::get_decay_watch))
         .route("/conjunctions/search", get(handlers::search_conjunctions))
+        .route(
+            "/conjunctions/collision-probability",
+            post(handlers::calculate_collision_probability),
+        )
         .route(
             "/satellites/:id/next-visible",
             get(handlers::get_next_visible),
+        )
+        .route(
+            "/satellites/:id/passes",
+            get(handlers::get_satellite_passes),
+        )
+        .route(
+            "/satellites/:id/relative-motion",
+            get(handlers::get_relative_motion),
+        )
+        .route("/satellites/:id/state", get(handlers::get_satellite_state))
+        .route(
+            "/satellites/:id/decay-risk",
+            get(handlers::get_satellite_decay_risk),
         )
         .route(
             "/satellites/:id/groundtrack",

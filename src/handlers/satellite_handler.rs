@@ -1,10 +1,13 @@
 use crate::auth::{Claims, UserRole};
 use crate::error::AppError;
 use crate::models::{
-    AnomalyDetectionRequest, AnomalyDetectionResponse, ConjunctionSearchResponse,
-    CreateSatelliteDto, DopplerResponse, GroundTrackResponse, IlluminationResponse,
-    ManeuverQueryParams, ManeuversResponse, NextVisiblePassResponse, OverheadResponse, Satellite,
-    TransitPredictionResponse, TransitQueryParams, TransitTarget, UpdateSatelliteDto,
+    AnomalyDetectionRequest, AnomalyDetectionResponse, CollisionProbabilityRequest,
+    CollisionProbabilityResponse, ConjunctionSearchResponse, CreateSatelliteDto,
+    DecayWatchResponse, DopplerResponse, GroundTrackResponse, IlluminationResponse,
+    ManeuverQueryParams, ManeuversResponse, NextVisiblePassResponse, OverheadResponse,
+    PassScheduleResponse, RelativeMotionResponse, Satellite, SatelliteDecayRiskResponse,
+    SatelliteStateResponse, TransitPredictionResponse, TransitQueryParams, TransitTarget,
+    UpdateSatelliteDto,
 };
 use crate::pagination::{PaginatedResponse, PaginationQuery};
 use crate::repository::SatelliteRepository;
@@ -42,6 +45,52 @@ pub struct NextVisibleQueryParams {
     pub alt: Option<f64>,
     /// Minimum elevation angle threshold in degrees (default: 5.0 deg)
     pub threshold_deg: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct PassScheduleQueryParams {
+    /// Observer latitude in decimal degrees (-90.0 to 90.0)
+    pub lat: f64,
+    /// Observer longitude in decimal degrees (-180.0 to 180.0)
+    pub lon: f64,
+    /// Observer altitude above sea level in meters (default: 0.0 m)
+    pub alt: Option<f64>,
+    /// Minimum elevation angle threshold in degrees (default: 5.0 deg)
+    pub threshold_deg: Option<f64>,
+    /// Forecast schedule window in days (default: 3 days, max: 14)
+    pub duration_days: Option<usize>,
+    /// Filter for only visually observable passes in twilight/darkness (default: false)
+    pub visible_only: Option<bool>,
+    /// UTC timestamp to start pass schedule forecast from (defaults to current time if omitted)
+    pub start_time: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct RelativeMotionQueryParams {
+    /// Target / secondary satellite unique UUID identifier
+    pub target_id: Uuid,
+    /// UTC timestamp for calculation epoch (defaults to current time if omitted)
+    pub time: Option<DateTime<Utc>>,
+    /// Relative motion trajectory duration in minutes (default: 0, max: 1440)
+    pub duration_minutes: Option<usize>,
+    /// Step sampling interval in seconds (default: 60 secs, min: 5, max: 300)
+    pub step_seconds: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct StateVectorQueryParams {
+    /// UTC timestamp for calculation epoch (defaults to current time if omitted)
+    pub epoch: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct DecayWatchQueryParams {
+    /// Maximum perigee altitude threshold in km to flag re-entry hazard (default: 300.0 km)
+    pub max_perigee_km: Option<f64>,
+    /// Minimum B* atmospheric drag coefficient threshold (default: 0.0001)
+    pub min_bstar: Option<f64>,
+    /// Maximum number of decaying objects to return (default: 50, max: 500)
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -937,6 +986,319 @@ pub async fn get_lunar_transits(
     })
     .await
     .map_err(|e| AppError::InternalServerError(e.to_string()))??;
+
+    Ok(Json(res))
+}
+
+/// Schedule Ground Station Satellite Passes
+///
+/// Computes multi-day pass prediction schedule (AOS, TCA, LOS, elevation, azimuth, duration, optical visibility, visual magnitude). Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).
+#[utoipa::path(
+    get,
+    path = "/v1/satellites/{id}/passes",
+    operation_id = "getSatellitePasses",
+    params(
+        ("id" = Uuid, Path, description = "Satellite unique UUID identifier"),
+        PassScheduleQueryParams
+    ),
+    responses(
+        (status = 200, description = "Satellite pass schedule computed successfully", body = PassScheduleResponse),
+        (status = 401, description = "Unauthorized - Missing or invalid JWT token", body = ErrorResponse),
+        (status = 404, description = "Satellite not found", body = ErrorResponse)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "Satellites"
+)]
+pub async fn get_satellite_passes(
+    claims: Claims,
+    State(repo): State<SatelliteRepository>,
+    Path(id): Path<Uuid>,
+    Query(params): Query<PassScheduleQueryParams>,
+) -> Result<Json<PassScheduleResponse>, AppError> {
+    claims.require_role(UserRole::Viewer)?;
+    let satellite = repo.get_satellite_by_id(id).await?;
+    let start_time = params.start_time.unwrap_or_else(Utc::now);
+    let alt = params.alt.unwrap_or(0.0);
+    let threshold = params.threshold_deg.unwrap_or(5.0);
+    let days = params.duration_days.unwrap_or(3).clamp(1, 14);
+    let visible_only = params.visible_only.unwrap_or(false);
+
+    let time_bucket = start_time.timestamp() / 60;
+    let cache_key = format!(
+        "passes:{}:{:.2}:{:.2}:{:.1}:{:.1}:{}:{}:{}",
+        id, params.lat, params.lon, alt, threshold, days, visible_only, time_bucket
+    );
+
+    let res = repo
+        .cache
+        .get_or_insert_with(&cache_key, || async move {
+            let sat_clone = satellite.clone();
+            let pass_res = tokio::task::spawn_blocking(move || {
+                astrodynamics::find_pass_schedule(
+                    &sat_clone,
+                    params.lat,
+                    params.lon,
+                    alt,
+                    start_time,
+                    threshold,
+                    days,
+                    visible_only,
+                )
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+
+            pass_res.map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(map_calculation_error)?;
+
+    Ok(Json(res))
+}
+
+/// Compute Satellite Relative Motion & RPO
+///
+/// Computes relative position, velocity vectors, range rate, and RPO regime in the Local-Vertical Local-Horizontal (LVLH / Hill's) frame between two satellites. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).
+#[utoipa::path(
+    get,
+    path = "/v1/satellites/{id}/relative-motion",
+    operation_id = "getRelativeMotion",
+    params(
+        ("id" = Uuid, Path, description = "Primary satellite unique UUID identifier"),
+        RelativeMotionQueryParams
+    ),
+    responses(
+        (status = 200, description = "Relative motion and RPO computed successfully", body = RelativeMotionResponse),
+        (status = 401, description = "Unauthorized - Missing or invalid JWT token", body = ErrorResponse),
+        (status = 404, description = "Satellite not found", body = ErrorResponse)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "Satellites"
+)]
+pub async fn get_relative_motion(
+    claims: Claims,
+    State(repo): State<SatelliteRepository>,
+    Path(id): Path<Uuid>,
+    Query(params): Query<RelativeMotionQueryParams>,
+) -> Result<Json<RelativeMotionResponse>, AppError> {
+    claims.require_role(UserRole::Viewer)?;
+    let primary = repo.get_satellite_by_id(id).await?;
+    let target = repo.get_satellite_by_id(params.target_id).await?;
+    let epoch = params.time.unwrap_or_else(Utc::now);
+    let dur_mins = params.duration_minutes.unwrap_or(0);
+    let step_secs = params.step_seconds.unwrap_or(60);
+
+    let time_bucket = epoch.timestamp() / 10;
+    let cache_key = format!(
+        "relmotion:{}:{}:{}:{}:{}",
+        id, params.target_id, dur_mins, step_secs, time_bucket
+    );
+
+    let res = repo
+        .cache
+        .get_or_insert_with(&cache_key, || async move {
+            let p_clone = primary.clone();
+            let t_clone = target.clone();
+            let motion_res = tokio::task::spawn_blocking(move || {
+                astrodynamics::calculate_relative_motion(
+                    &p_clone, &t_clone, epoch, dur_mins, step_secs,
+                )
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+
+            motion_res.map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(map_calculation_error)?;
+
+    Ok(Json(res))
+}
+
+/// Get Instantaneous State Vector & Keplerian Elements
+///
+/// Computes ECI (TEME), ECEF, Geodetic state vectors and osculating Keplerian orbital elements at an exact epoch. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).
+#[utoipa::path(
+    get,
+    path = "/v1/satellites/{id}/state",
+    operation_id = "getSatelliteState",
+    params(
+        ("id" = Uuid, Path, description = "Satellite unique UUID identifier"),
+        StateVectorQueryParams
+    ),
+    responses(
+        (status = 200, description = "Satellite state vector computed successfully", body = SatelliteStateResponse),
+        (status = 401, description = "Unauthorized - Missing or invalid JWT token", body = ErrorResponse),
+        (status = 404, description = "Satellite not found", body = ErrorResponse)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "Satellites"
+)]
+pub async fn get_satellite_state(
+    claims: Claims,
+    State(repo): State<SatelliteRepository>,
+    Path(id): Path<Uuid>,
+    Query(params): Query<StateVectorQueryParams>,
+) -> Result<Json<SatelliteStateResponse>, AppError> {
+    claims.require_role(UserRole::Viewer)?;
+    let satellite = repo.get_satellite_by_id(id).await?;
+    let epoch = params.epoch.unwrap_or_else(Utc::now);
+
+    let time_bucket = epoch.timestamp() / 10;
+    let cache_key = format!("state:{}:{}", id, time_bucket);
+
+    let res = repo
+        .cache
+        .get_or_insert_with(&cache_key, || async move {
+            let sat_clone = satellite.clone();
+            let state_res = tokio::task::spawn_blocking(move || {
+                astrodynamics::calculate_satellite_state(&sat_clone, epoch)
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+
+            state_res.map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(map_calculation_error)?;
+
+    Ok(Json(res))
+}
+
+/// Get Satellite Atmospheric Drag & Decay Risk
+///
+/// Evaluates perigee/apogee altitude, B* atmospheric drag decay rate, remaining orbital lifetime, and uncontrolled re-entry risk score. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).
+#[utoipa::path(
+    get,
+    path = "/v1/satellites/{id}/decay-risk",
+    operation_id = "getSatelliteDecayRisk",
+    params(
+        ("id" = Uuid, Path, description = "Satellite unique UUID identifier")
+    ),
+    responses(
+        (status = 200, description = "Satellite orbital decay risk assessed successfully", body = SatelliteDecayRiskResponse),
+        (status = 401, description = "Unauthorized - Missing or invalid JWT token", body = ErrorResponse),
+        (status = 404, description = "Satellite not found", body = ErrorResponse)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "Satellites"
+)]
+pub async fn get_satellite_decay_risk(
+    claims: Claims,
+    State(repo): State<SatelliteRepository>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<SatelliteDecayRiskResponse>, AppError> {
+    claims.require_role(UserRole::Viewer)?;
+    let satellite = repo.get_satellite_by_id(id).await?;
+
+    let cache_key = format!(
+        "decay_risk:{}:{}",
+        id,
+        satellite.last_modified_date.timestamp()
+    );
+
+    let res = repo
+        .cache
+        .get_or_insert_with(&cache_key, || async move {
+            let sat_clone = satellite.clone();
+            let decay_res = tokio::task::spawn_blocking(move || {
+                astrodynamics::calculate_decay_risk(&sat_clone)
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+
+            decay_res.map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(map_calculation_error)?;
+
+    Ok(Json(res))
+}
+
+/// Atmospheric Drag & Orbital Decay Re-Entry Watch
+///
+/// Scans the satellite catalog for debris and satellites experiencing severe atmospheric drag or nearing uncontrolled atmospheric re-entry. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).
+#[utoipa::path(
+    get,
+    path = "/v1/satellites/decay-watch",
+    operation_id = "getDecayWatch",
+    params(DecayWatchQueryParams),
+    responses(
+        (status = 200, description = "Decay watch scan completed successfully", body = DecayWatchResponse),
+        (status = 401, description = "Unauthorized - Missing or invalid JWT token", body = ErrorResponse),
+        (status = 500, description = "Internal calculation error", body = ErrorResponse)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "Astrodynamics"
+)]
+pub async fn get_decay_watch(
+    claims: Claims,
+    State(repo): State<SatelliteRepository>,
+    Query(params): Query<DecayWatchQueryParams>,
+) -> Result<Json<DecayWatchResponse>, AppError> {
+    claims.require_role(UserRole::Viewer)?;
+    let satellites = repo.list_satellites().await?;
+    let max_perigee = params.max_perigee_km.unwrap_or(300.0);
+    let min_bstar = params.min_bstar.unwrap_or(0.0001);
+    let limit = params.limit.unwrap_or(50).clamp(1, 500);
+
+    let time_bucket = Utc::now().timestamp() / 60;
+    let cache_key = format!(
+        "decay_watch:{}:{:.1}:{:.6}:{}:{}",
+        satellites.len(),
+        max_perigee,
+        min_bstar,
+        limit,
+        time_bucket
+    );
+
+    let res = repo
+        .cache
+        .get_or_insert_with(&cache_key, || async move {
+            let watch_res = tokio::task::spawn_blocking(move || {
+                astrodynamics::scan_decay_watch(&satellites, max_perigee, min_bstar, limit)
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+
+            Ok(watch_res)
+        })
+        .await
+        .map_err(AppError::InternalServerError)?;
+
+    Ok(Json(res))
+}
+
+/// Calculate Conjunction Collision Probability (Pc)
+///
+/// Computes 2D encounter-plane collision probability (Pc) using Foster's algorithm given miss distance, relative velocity, hard-body radius, and combined position covariance uncertainty. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).
+#[utoipa::path(
+    post,
+    path = "/v1/conjunctions/collision-probability",
+    operation_id = "calculateCollisionProbability",
+    request_body = CollisionProbabilityRequest,
+    responses(
+        (status = 200, description = "Collision probability computed successfully", body = CollisionProbabilityResponse),
+        (status = 400, description = "Invalid request payload", body = ErrorResponse),
+        (status = 401, description = "Unauthorized - Missing or invalid JWT token", body = ErrorResponse)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "Astrodynamics"
+)]
+pub async fn calculate_collision_probability(
+    claims: Claims,
+    Json(req): Json<CollisionProbabilityRequest>,
+) -> Result<Json<CollisionProbabilityResponse>, AppError> {
+    claims.require_role(UserRole::Viewer)?;
+    let hbr = req.hard_body_radius_m.unwrap_or(10.0);
+    let sigma = req.combined_position_uncertainty_m.unwrap_or(50.0);
+
+    let res = astrodynamics::calculate_foster_collision_probability(
+        req.miss_distance_km,
+        req.relative_velocity_kms,
+        hbr,
+        sigma,
+    );
 
     Ok(Json(res))
 }

@@ -99,8 +99,37 @@ fn test_openapi_schema_static_contract() {
         "Missing or invalid operationId for GET /v1/conjunctions/search"
     );
     assert!(
+        paths["/v1/conjunctions/collision-probability"]["post"]["operationId"].as_str()
+            == Some("calculateCollisionProbability"),
+        "Missing or invalid operationId for POST /v1/conjunctions/collision-probability"
+    );
+    assert!(
         paths["/v1/pipelines/sync"]["post"]["operationId"].as_str() == Some("triggerPipelineSync"),
         "Missing or invalid operationId for POST /v1/pipelines/sync"
+    );
+    assert!(
+        paths["/v1/satellites/{id}/passes"]["get"]["operationId"].as_str()
+            == Some("getSatellitePasses"),
+        "Missing or invalid operationId for GET /v1/satellites/{{id}}/passes"
+    );
+    assert!(
+        paths["/v1/satellites/{id}/relative-motion"]["get"]["operationId"].as_str()
+            == Some("getRelativeMotion"),
+        "Missing or invalid operationId for GET /v1/satellites/{{id}}/relative-motion"
+    );
+    assert!(
+        paths["/v1/satellites/{id}/state"]["get"]["operationId"].as_str()
+            == Some("getSatelliteState"),
+        "Missing or invalid operationId for GET /v1/satellites/{{id}}/state"
+    );
+    assert!(
+        paths["/v1/satellites/{id}/decay-risk"]["get"]["operationId"].as_str()
+            == Some("getSatelliteDecayRisk"),
+        "Missing or invalid operationId for GET /v1/satellites/{{id}}/decay-risk"
+    );
+    assert!(
+        paths["/v1/satellites/decay-watch"]["get"]["operationId"].as_str() == Some("getDecayWatch"),
+        "Missing or invalid operationId for GET /v1/satellites/decay-watch"
     );
 
     // Verify REST Architecture Tag Separation:
@@ -116,6 +145,22 @@ fn test_openapi_schema_static_contract() {
         (
             &paths["/v1/satellites/{id}/next-visible"]["get"],
             "getNextVisiblePass",
+        ),
+        (
+            &paths["/v1/satellites/{id}/passes"]["get"],
+            "getSatellitePasses",
+        ),
+        (
+            &paths["/v1/satellites/{id}/relative-motion"]["get"],
+            "getRelativeMotion",
+        ),
+        (
+            &paths["/v1/satellites/{id}/state"]["get"],
+            "getSatelliteState",
+        ),
+        (
+            &paths["/v1/satellites/{id}/decay-risk"]["get"],
+            "getSatelliteDecayRisk",
         ),
         (
             &paths["/v1/satellites/{id}/groundtrack"]["get"],
@@ -210,6 +255,16 @@ fn test_openapi_schema_static_contract() {
         "ConjunctionMatch",
         "SatelliteSummary",
         "PipelineSyncResponse",
+        "SatellitePass",
+        "PassScheduleResponse",
+        "RelativeMotionPoint",
+        "RelativeMotionResponse",
+        "KeplerianElements",
+        "SatelliteStateResponse",
+        "SatelliteDecayRiskResponse",
+        "DecayWatchResponse",
+        "CollisionProbabilityRequest",
+        "CollisionProbabilityResponse",
         "PaginationMeta",
         "PaginatedResponseSatellite",
         "ErrorResponse",
