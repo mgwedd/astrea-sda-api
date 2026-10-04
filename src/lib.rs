@@ -96,6 +96,7 @@ impl Modify for SecurityAddon {
             models::ConjunctionMatch,
             models::SatelliteSummary,
             handlers::satellite_handler::PipelineSyncResponse,
+            handlers::satellite_handler::PipelineGroupSyncDetail,
             pagination::PaginationMeta,
             pagination::PaginatedResponseSatellite,
             error::ErrorResponse,

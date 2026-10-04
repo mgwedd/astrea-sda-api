@@ -7,7 +7,7 @@ ROLE ?= admin
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build dev-hot dev prod prod-run prod-up check fmt lint test test-watch keys jwt ui openapi sdk sdk-all sdk-ts sdk-typescript sdk-py sdk-python sdk-go sdk-java sdk-rust hooks install install-dev logs stop clean build-dev-hot build-dev build-prod urls
+.PHONY: help build dev-hot dev prod prod-run prod-up check fmt lint test test-watch keys jwt qa smoke ui openapi sdk sdk-all sdk-ts sdk-typescript sdk-py sdk-python sdk-go sdk-java sdk-rust hooks install install-dev logs stop clean build-dev-hot build-dev build-prod urls
 
 help: ## Display this self-documenting developer help menu
 	@echo "=============================================================================="
@@ -99,6 +99,12 @@ test-watch: ## Continuously run workspace test suite on source file changes
 
 jwt: keys ## Generate signed RS256 Bearer JWT test token (usage: make jwt USER=admin_user ROLE=admin)
 	@./scripts/make-jwt.sh $(USER) $(ROLE)
+
+qa: ## Run comprehensive end-to-end QA suite across In-Memory and Distributed stacks
+	@python3 scripts/run_e2e_qa.py
+
+smoke: ## Run 10-step live smoke test against running API server (default: http://localhost:8080)
+	@./scripts/qa-smoke-test.sh
 
 ##@ OpenAPI & SDK Generation
 

@@ -194,4 +194,38 @@ impl SatelliteRepository {
         }
         Ok(total)
     }
+
+    pub async fn get_pipeline_last_sync(
+        &self,
+        group: &str,
+    ) -> Option<chrono::DateTime<chrono::Utc>> {
+        let cache_key = format!("pipeline:last_sync:{}", group);
+        if let Some(ts_str) = self.cache.get_raw(&cache_key).await {
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&ts_str) {
+                return Some(dt.with_timezone(&chrono::Utc));
+            }
+        }
+        if let Ok(Some(dt)) = self.provider.get_pipeline_sync_time(group).await {
+            let ts_str = dt.to_rfc3339();
+            self.cache
+                .set_raw(&cache_key, ts_str, Duration::from_secs(86400 * 30))
+                .await;
+            return Some(dt);
+        }
+        None
+    }
+
+    pub async fn record_pipeline_sync(&self, group: &str, count: usize) -> Result<(), AppError> {
+        let now = chrono::Utc::now();
+        let cache_key = format!("pipeline:last_sync:{}", group);
+        self.cache
+            .set_raw(
+                &cache_key,
+                now.to_rfc3339(),
+                Duration::from_secs(86400 * 30),
+            )
+            .await;
+        let _ = self.provider.record_pipeline_sync_time(group, count).await;
+        Ok(())
+    }
 }

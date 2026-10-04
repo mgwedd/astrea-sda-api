@@ -30,12 +30,26 @@ pub trait DataProvider: Send + Sync {
         &self,
         dtos: Vec<CreateSatelliteDto>,
     ) -> Result<usize, AppError>;
+    async fn get_pipeline_sync_time(
+        &self,
+        _group: &str,
+    ) -> Result<Option<chrono::DateTime<Utc>>, AppError> {
+        Ok(None)
+    }
+    async fn record_pipeline_sync_time(
+        &self,
+        _group: &str,
+        _synced_count: usize,
+    ) -> Result<(), AppError> {
+        Ok(())
+    }
 }
 
 /// In-memory DataProvider fallback for offline testing and fast development.
 pub struct MemoryDataProvider {
     store: Arc<RwLock<HashMap<Uuid, Satellite>>>,
     tle_history: Arc<RwLock<HashMap<Uuid, Vec<Tle>>>>,
+    sync_history: Arc<RwLock<HashMap<String, chrono::DateTime<Utc>>>>,
 }
 
 impl MemoryDataProvider {
@@ -43,6 +57,7 @@ impl MemoryDataProvider {
         Self {
             store: Arc::new(RwLock::new(HashMap::new())),
             tle_history: Arc::new(RwLock::new(HashMap::new())),
+            sync_history: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
@@ -257,6 +272,30 @@ impl DataProvider for MemoryDataProvider {
         }
         Ok(count)
     }
+
+    async fn get_pipeline_sync_time(
+        &self,
+        group: &str,
+    ) -> Result<Option<chrono::DateTime<Utc>>, AppError> {
+        let history = self
+            .sync_history
+            .read()
+            .map_err(|e| AppError::InternalServerError(e.to_string()))?;
+        Ok(history.get(group).copied())
+    }
+
+    async fn record_pipeline_sync_time(
+        &self,
+        group: &str,
+        _synced_count: usize,
+    ) -> Result<(), AppError> {
+        let mut history = self
+            .sync_history
+            .write()
+            .map_err(|e| AppError::InternalServerError(e.to_string()))?;
+        history.insert(group.to_string(), Utc::now());
+        Ok(())
+    }
 }
 
 /// Native PostgreSQL DataProvider utilizing SQLx connection pool and Row-Level Security (RLS).
@@ -307,6 +346,13 @@ impl PostgresDataProvider {
                 line_two TEXT NOT NULL,
                 epoch TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            "#,
+            r#"
+            CREATE TABLE IF NOT EXISTS pipeline_sync_history (
+                group_name TEXT PRIMARY KEY,
+                last_synced_at TIMESTAMPTZ NOT NULL,
+                synced_count INT NOT NULL DEFAULT 0
             );
             "#,
         ];
@@ -610,6 +656,47 @@ impl DataProvider for PostgresDataProvider {
         })?;
 
         Ok(count)
+    }
+
+    async fn get_pipeline_sync_time(
+        &self,
+        group: &str,
+    ) -> Result<Option<chrono::DateTime<Utc>>, AppError> {
+        let row =
+            sqlx::query("SELECT last_synced_at FROM pipeline_sync_history WHERE group_name = $1")
+                .bind(group)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| AppError::InternalServerError(e.to_string()))?;
+
+        if let Some(r) = row {
+            let dt: chrono::DateTime<Utc> = r
+                .try_get("last_synced_at")
+                .map_err(|e| AppError::InternalServerError(e.to_string()))?;
+            Ok(Some(dt))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn record_pipeline_sync_time(
+        &self,
+        group: &str,
+        synced_count: usize,
+    ) -> Result<(), AppError> {
+        let now = Utc::now();
+        sqlx::query(
+            "INSERT INTO pipeline_sync_history (group_name, last_synced_at, synced_count) VALUES ($1, $2, $3)
+             ON CONFLICT (group_name) DO UPDATE SET last_synced_at = EXCLUDED.last_synced_at, synced_count = EXCLUDED.synced_count"
+        )
+        .bind(group)
+        .bind(now)
+        .bind(synced_count as i32)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::InternalServerError(e.to_string()))?;
+
+        Ok(())
     }
 }
 

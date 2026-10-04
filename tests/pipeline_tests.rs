@@ -127,3 +127,176 @@ async fn test_chunked_batch_upsert_satellites() {
     let list2 = repo.list_satellites().await.unwrap();
     assert_eq!(list2.len(), 1200);
 }
+
+#[test]
+fn test_celestrak_group_parse_groups_defaults_and_validation() {
+    use astrea_sda_api::services::pipeline::CelesTrakGroup;
+
+    // 1. Defaults / Curated
+    assert_eq!(
+        CelesTrakGroup::parse_groups("").unwrap(),
+        CelesTrakGroup::CURATED.to_vec()
+    );
+    assert_eq!(
+        CelesTrakGroup::parse_groups("curated").unwrap(),
+        CelesTrakGroup::CURATED.to_vec()
+    );
+    assert_eq!(
+        CelesTrakGroup::parse_groups("default").unwrap(),
+        CelesTrakGroup::CURATED.to_vec()
+    );
+
+    // 2. All
+    assert_eq!(
+        CelesTrakGroup::parse_groups("all").unwrap(),
+        CelesTrakGroup::ALL.to_vec()
+    );
+
+    // 3. Single groups & case insensitivity
+    assert_eq!(
+        CelesTrakGroup::parse_groups("Starlink").unwrap(),
+        vec![CelesTrakGroup::Starlink]
+    );
+    assert_eq!(
+        CelesTrakGroup::parse_groups("stations").unwrap(),
+        vec![CelesTrakGroup::Stations]
+    );
+    assert_eq!(
+        CelesTrakGroup::parse_groups("weather").unwrap(),
+        vec![CelesTrakGroup::Weather]
+    );
+
+    // 4. Comma-separated list with deduplication
+    assert_eq!(
+        CelesTrakGroup::parse_groups("stations, visual, stations").unwrap(),
+        vec![CelesTrakGroup::Stations, CelesTrakGroup::Visual]
+    );
+
+    // 5. Unknown group / typo error handling
+    let err = CelesTrakGroup::parse_groups("sterlink").unwrap_err();
+    assert!(
+        err.contains("Unknown satellite group(s): 'sterlink'"),
+        "Expected error message mentioning typo, got: {}",
+        err
+    );
+    assert!(
+        err.contains("Supported groups:"),
+        "Expected error message listing supported groups, got: {}",
+        err
+    );
+}
+
+#[tokio::test]
+async fn test_pipeline_sync_endpoint_validation_and_auth() {
+    use astrea_sda_api::{create_router, repository::SatelliteRepository};
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    let repo = SatelliteRepository::new(None).await;
+    let app = create_router(repo);
+
+    // 1. Login as admin
+    let login_payload = json!({
+        "email": "admin@astrea.local",
+        "password": "password123"
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/auth/login")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&login_payload).unwrap()))
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let auth_val: Value = serde_json::from_slice(&bytes).unwrap();
+    let admin_token = auth_val["token"].as_str().unwrap();
+
+    // 2. Calling with typo/invalid group -> Expect 400 Bad Request
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/pipelines/sync?group=sterlink")
+        .header("authorization", format!("Bearer {}", admin_token))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let err_body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(err_body["status"], 400);
+    assert!(err_body["error"]
+        .as_str()
+        .unwrap()
+        .contains("Unknown satellite group(s): 'sterlink'"));
+}
+
+#[tokio::test]
+async fn test_pipeline_sync_freshness_anti_spam_and_force() {
+    use astrea_sda_api::{create_router, repository::SatelliteRepository};
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    let repo = SatelliteRepository::new(None).await;
+
+    // Simulate that group 'stations' was synced previously
+    repo.record_pipeline_sync("stations", 20).await.unwrap();
+
+    let app = create_router(repo);
+
+    // 1. Admin login
+    let login_payload = json!({
+        "email": "admin@astrea.local",
+        "password": "password123"
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/auth/login")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&login_payload).unwrap()))
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let auth_val: Value = serde_json::from_slice(&bytes).unwrap();
+    let admin_token = auth_val["token"].as_str().unwrap();
+
+    // 2. Query sync with max_age_hours=12.0 -> Should skip CelesTrak call because 1h < 12h
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/pipelines/sync?group=stations&max_age_hours=12")
+        .header("authorization", format!("Bearer {}", admin_token))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let res_json: Value = serde_json::from_slice(&bytes).unwrap();
+
+    assert_eq!(res_json["syncedCount"], 0);
+    assert_eq!(res_json["maxAgeHours"], 12.0);
+    assert_eq!(res_json["force"], false);
+    assert_eq!(res_json["groups"][0]["status"], "fresh");
+    assert_eq!(res_json["groups"][0]["syncedCount"], 0);
+    assert!(res_json["message"].as_str().unwrap().contains("up-to-date"));
+    assert!(res_json["message"]
+        .as_str()
+        .unwrap()
+        .contains("skipped to prevent spam"));
+}

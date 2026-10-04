@@ -268,10 +268,31 @@
           {
             "name": "group",
             "in": "query",
-            "description": "CelesTrak satellite group name (e.g. 'stations', 'visual', 'starlink', 'weather', 'active', 'last-30-days')",
+            "description": "CelesTrak satellite group name to synchronize. Options: 'curated' (default: stations, visual, last-30-days), 'all', 'stations', 'visual', 'starlink', 'weather', 'last-30-days', 'active', or a comma-separated list (e.g. 'stations,visual').",
             "required": false,
             "schema": {
               "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "max_age_hours",
+            "in": "query",
+            "description": "Maximum allowed data age in hours before triggering a CelesTrak query (default: 12.0 hours). If existing data was synced within this period, CelesTrak requests are skipped to prevent spamming.",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "format": "double",
+              "nullable": true
+            }
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "description": "Force an immediate fetch from CelesTrak, bypassing freshness checks.",
+            "required": false,
+            "schema": {
+              "type": "boolean",
               "nullable": true
             }
           }
@@ -283,6 +304,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PipelineSyncResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request - Invalid or unknown satellite group",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -2299,6 +2330,41 @@
           }
         }
       },
+      "PipelineGroupSyncDetail": {
+        "type": "object",
+        "required": [
+          "group",
+          "syncedCount",
+          "status"
+        ],
+        "properties": {
+          "ageHours": {
+            "type": "number",
+            "format": "double",
+            "description": "Current age of the data in hours at query time",
+            "nullable": true
+          },
+          "group": {
+            "type": "string",
+            "description": "Group identifier that was synchronized"
+          },
+          "lastSyncedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "UTC timestamp when this group was last synchronized from CelesTrak",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "description": "Freshness status: 'synced' (fetched from CelesTrak) or 'fresh' (skipped because records are within maxAgeHours)"
+          },
+          "syncedCount": {
+            "type": "integer",
+            "description": "Number of satellites upserted for this specific group (0 if skipped because data was already fresh)",
+            "minimum": 0
+          }
+        }
+      },
       "PipelineSyncResponse": {
         "type": "object",
         "required": [
@@ -2307,14 +2373,44 @@
           "message"
         ],
         "properties": {
+          "availableGroups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Available CelesTrak groups supported by the API",
+            "nullable": true
+          },
+          "force": {
+            "type": "boolean",
+            "description": "Whether force mode was enabled to bypass freshness checks",
+            "nullable": true
+          },
           "group": {
-            "type": "string"
+            "type": "string",
+            "description": "Requested group name or descriptive summary"
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PipelineGroupSyncDetail"
+            },
+            "description": "Detailed per-group synchronization counts and freshness status",
+            "nullable": true
+          },
+          "maxAgeHours": {
+            "type": "number",
+            "format": "double",
+            "description": "Maximum age limit applied in hours",
+            "nullable": true
           },
           "message": {
-            "type": "string"
+            "type": "string",
+            "description": "Informative status summary message"
           },
           "syncedCount": {
             "type": "integer",
+            "description": "Total number of satellites newly updated across all groups",
             "minimum": 0
           }
         }

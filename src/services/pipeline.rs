@@ -3,7 +3,7 @@ use crate::repository::SatelliteRepository;
 use std::time::Duration;
 use tracing::{error, info};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CelesTrakGroup {
     Stations,
     Visual,
@@ -14,6 +14,21 @@ pub enum CelesTrakGroup {
 }
 
 impl CelesTrakGroup {
+    pub const ALL: &'static [CelesTrakGroup] = &[
+        CelesTrakGroup::Stations,
+        CelesTrakGroup::Visual,
+        CelesTrakGroup::Starlink,
+        CelesTrakGroup::Weather,
+        CelesTrakGroup::Last30Days,
+        CelesTrakGroup::Active,
+    ];
+
+    pub const CURATED: &'static [CelesTrakGroup] = &[
+        CelesTrakGroup::Stations,
+        CelesTrakGroup::Visual,
+        CelesTrakGroup::Last30Days,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             CelesTrakGroup::Stations => "stations",
@@ -23,6 +38,80 @@ impl CelesTrakGroup {
             CelesTrakGroup::Last30Days => "last-30-days",
             CelesTrakGroup::Active => "active",
         }
+    }
+
+    pub fn all_names() -> Vec<&'static str> {
+        Self::ALL.iter().map(|g| g.as_str()).collect()
+    }
+
+    pub fn from_str_strict(s: &str) -> Option<CelesTrakGroup> {
+        match s.trim().to_lowercase().as_str() {
+            "stations" | "station" => Some(CelesTrakGroup::Stations),
+            "visual" | "brightest" => Some(CelesTrakGroup::Visual),
+            "starlink" => Some(CelesTrakGroup::Starlink),
+            "weather" => Some(CelesTrakGroup::Weather),
+            "last-30-days" | "last_30_days" | "last30days" | "recent" => {
+                Some(CelesTrakGroup::Last30Days)
+            }
+            "active" => Some(CelesTrakGroup::Active),
+            _ => None,
+        }
+    }
+
+    pub fn parse_groups(input: &str) -> Result<Vec<CelesTrakGroup>, String> {
+        let trimmed = input.trim();
+        if trimmed.is_empty()
+            || trimmed.eq_ignore_ascii_case("curated")
+            || trimmed.eq_ignore_ascii_case("default")
+        {
+            return Ok(Self::CURATED.to_vec());
+        }
+        if trimmed.eq_ignore_ascii_case("all") {
+            return Ok(Self::ALL.to_vec());
+        }
+
+        let mut groups = Vec::new();
+        let mut unknown = Vec::new();
+
+        for part in trimmed.split(',') {
+            let p = part.trim();
+            if p.is_empty() {
+                continue;
+            }
+            if p.eq_ignore_ascii_case("curated") || p.eq_ignore_ascii_case("default") {
+                for g in Self::CURATED {
+                    if !groups.contains(g) {
+                        groups.push(*g);
+                    }
+                }
+            } else if p.eq_ignore_ascii_case("all") {
+                for g in Self::ALL {
+                    if !groups.contains(g) {
+                        groups.push(*g);
+                    }
+                }
+            } else if let Some(g) = Self::from_str_strict(p) {
+                if !groups.contains(&g) {
+                    groups.push(g);
+                }
+            } else {
+                unknown.push(p.to_string());
+            }
+        }
+
+        if !unknown.is_empty() {
+            return Err(format!(
+                "Unknown satellite group(s): '{}'. Supported groups: {}, or 'curated', 'all'",
+                unknown.join(", "),
+                Self::all_names().join(", ")
+            ));
+        }
+
+        if groups.is_empty() {
+            return Ok(Self::CURATED.to_vec());
+        }
+
+        Ok(groups)
     }
 }
 
@@ -290,27 +379,83 @@ impl DiscoveryPipeline {
 
         dtos
     }
+}
 
-    /// Performs sync for a group and upserts results into SatelliteRepository in 500-record transaction chunks
-    pub async fn sync_group(
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct GroupSyncResult {
+    pub group: String,
+    pub synced_count: usize,
+    pub status: String, // "synced" or "fresh"
+    pub last_synced_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub age_hours: Option<f64>,
+}
+
+impl DiscoveryPipeline {
+    /// Synchronizes a CelesTrak group with freshness gating to prevent spamming CelesTrak.
+    /// If existing data is younger than `max_age_hours` and `!force`, outbound CelesTrak requests are skipped.
+    pub async fn sync_group_with_freshness(
         repo: &SatelliteRepository,
         group: CelesTrakGroup,
-    ) -> Result<usize, String> {
+        max_age_hours: f64,
+        force: bool,
+    ) -> Result<GroupSyncResult, String> {
+        let group_str = group.as_str();
+        let last_synced = repo.get_pipeline_last_sync(group_str).await;
+
+        if let Some(last_sync) = last_synced {
+            let elapsed_secs = (chrono::Utc::now() - last_sync).num_seconds().max(0) as f64;
+            let age_hours = elapsed_secs / 3600.0;
+
+            if !force && max_age_hours > 0.0 && age_hours < max_age_hours {
+                info!(
+                    "Group '{}' is up to date (synced {:.2}h ago, max age: {:.1}h). Skipping CelesTrak request to avoid spamming.",
+                    group_str, age_hours, max_age_hours
+                );
+                return Ok(GroupSyncResult {
+                    group: group_str.to_string(),
+                    synced_count: 0,
+                    status: "fresh".to_string(),
+                    last_synced_at: Some(last_sync),
+                    age_hours: Some(age_hours),
+                });
+            }
+        }
+
+        info!(
+            "Fetching discovery feed from CelesTrak for group '{}' (force={}, max_age_hours={:.1})...",
+            group_str, force, max_age_hours
+        );
         let dtos = Self::fetch_group_tle(group).await?;
-        let total = dtos.len();
 
         // Perform batch upsert in 500-record transaction chunks with post-commit cache invalidation
         let processed = repo
             .batch_upsert_satellites(dtos, 500)
             .await
-            .map_err(|e| format!("Batch upsert failed for group {}: {}", group.as_str(), e))?;
+            .map_err(|e| format!("Batch upsert failed for group {}: {}", group_str, e))?;
+
+        let _ = repo.record_pipeline_sync(group_str, processed).await;
 
         info!(
             "Successfully synced {} satellites for group {} in 500-record transaction batches",
-            processed,
-            group.as_str()
+            processed, group_str
         );
-        Ok(total)
+
+        Ok(GroupSyncResult {
+            group: group_str.to_string(),
+            synced_count: processed,
+            status: "synced".to_string(),
+            last_synced_at: Some(chrono::Utc::now()),
+            age_hours: Some(0.0),
+        })
+    }
+
+    /// Direct wrapper that forces a sync without freshness check
+    pub async fn sync_group(
+        repo: &SatelliteRepository,
+        group: CelesTrakGroup,
+    ) -> Result<usize, String> {
+        let res = Self::sync_group_with_freshness(repo, group, 0.0, true).await?;
+        Ok(res.synced_count)
     }
 
     /// Starts a background worker on a dedicated low-priority OS thread with an isolated Tokio runtime
@@ -333,19 +478,39 @@ impl DiscoveryPipeline {
                 rt.block_on(async move {
                     let mut interval =
                         tokio::time::interval(Duration::from_secs(interval_hours * 3600));
-                    // First tick completes immediately
-                    interval.tick().await;
+                    let groups_env = std::env::var("DISCOVERY_SYNC_GROUPS")
+                        .unwrap_or_else(|_| "curated".to_string());
+                    let groups = CelesTrakGroup::parse_groups(&groups_env).unwrap_or_else(|e| {
+                        error!(
+                            "Invalid DISCOVERY_SYNC_GROUPS ('{}'): {}. Falling back to 'curated'",
+                            groups_env, e
+                        );
+                        CelesTrakGroup::CURATED.to_vec()
+                    });
+                    let max_age_hours: f64 = std::env::var("PIPELINE_MAX_AGE_HOURS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(interval_hours as f64);
+
+                    let group_names: Vec<&str> = groups.iter().map(|g| g.as_str()).collect();
+                    info!(
+                        "🚀 Configured background CelesTrak discovery pipeline for groups: [{}] (every {}h, max age: {:.1}h)",
+                        group_names.join(", "),
+                        interval_hours,
+                        max_age_hours
+                    );
 
                     loop {
-                        info!("Starting scheduled CelesTrak discovery pipeline sync on dedicated worker thread...");
-                        let groups = [
-                            CelesTrakGroup::Stations,
-                            CelesTrakGroup::Visual,
-                            CelesTrakGroup::Last30Days,
-                        ];
+                        info!(
+                            "Starting scheduled CelesTrak discovery pipeline sync for groups: [{}] on dedicated worker thread...",
+                            group_names.join(", ")
+                        );
 
-                        for group in groups {
-                            if let Err(e) = Self::sync_group(&repo, group).await {
+                        for &group in &groups {
+                            if let Err(e) =
+                                Self::sync_group_with_freshness(&repo, group, max_age_hours, false)
+                                    .await
+                            {
                                 error!("Failed discovery sync for group {}: {}", group.as_str(), e);
                             }
                         }

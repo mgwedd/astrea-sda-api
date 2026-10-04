@@ -58,16 +58,46 @@ pub struct GroundTrackQueryParams {
 
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct PipelineSyncQueryParams {
-    /// CelesTrak satellite group name (e.g. 'stations', 'visual', 'starlink', 'weather', 'active', 'last-30-days')
+    /// CelesTrak satellite group name to synchronize. Options: 'curated' (default: stations, visual, last-30-days), 'all', 'stations', 'visual', 'starlink', 'weather', 'last-30-days', 'active', or a comma-separated list (e.g. 'stations,visual').
     pub group: Option<String>,
+    /// Maximum allowed data age in hours before triggering a CelesTrak query (default: 12.0 hours). If existing data was synced within this period, CelesTrak requests are skipped to prevent spamming.
+    pub max_age_hours: Option<f64>,
+    /// Force an immediate fetch from CelesTrak, bypassing freshness checks.
+    pub force: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineGroupSyncDetail {
+    /// Group identifier that was synchronized
+    pub group: String,
+    /// Number of satellites upserted for this specific group (0 if skipped because data was already fresh)
+    pub synced_count: usize,
+    /// Freshness status: 'synced' (fetched from CelesTrak) or 'fresh' (skipped because records are within maxAgeHours)
+    pub status: String,
+    /// UTC timestamp when this group was last synchronized from CelesTrak
+    pub last_synced_at: Option<DateTime<Utc>>,
+    /// Current age of the data in hours at query time
+    pub age_hours: Option<f64>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PipelineSyncResponse {
+    /// Requested group name or descriptive summary
     pub group: String,
+    /// Total number of satellites newly updated across all groups
     pub synced_count: usize,
+    /// Informative status summary message
     pub message: String,
+    /// Detailed per-group synchronization counts and freshness status
+    pub groups: Option<Vec<PipelineGroupSyncDetail>>,
+    /// Available CelesTrak groups supported by the API
+    pub available_groups: Option<Vec<String>>,
+    /// Maximum age limit applied in hours
+    pub max_age_hours: Option<f64>,
+    /// Whether force mode was enabled to bypass freshness checks
+    pub force: Option<bool>,
 }
 
 fn map_calculation_error(e: String) -> AppError {
@@ -239,6 +269,7 @@ pub async fn delete_satellite(
     params(PipelineSyncQueryParams),
     responses(
         (status = 200, description = "Pipeline sync completed successfully", body = PipelineSyncResponse),
+        (status = 400, description = "Bad Request - Invalid or unknown satellite group", body = ErrorResponse),
         (status = 401, description = "Unauthorized - Missing or invalid JWT token", body = ErrorResponse),
         (status = 403, description = "Forbidden - Insufficient role permissions", body = ErrorResponse),
         (status = 500, description = "Pipeline sync execution failed", body = ErrorResponse)
@@ -254,28 +285,87 @@ pub async fn trigger_pipeline_sync(
     claims.require_role(UserRole::Admin)?;
     tracing::info!("Pipeline sync triggered by JWT user: {}", claims.sub);
 
-    let group = match params.group.as_deref() {
-        Some("visual") => CelesTrakGroup::Visual,
-        Some("starlink") => CelesTrakGroup::Starlink,
-        Some("weather") => CelesTrakGroup::Weather,
-        Some("last-30-days") => CelesTrakGroup::Last30Days,
-        Some("active") => CelesTrakGroup::Active,
-        _ => CelesTrakGroup::Stations,
+    let raw_input = params.group.as_deref().unwrap_or("curated");
+    let requested_groups = CelesTrakGroup::parse_groups(raw_input).map_err(AppError::BadRequest)?;
+
+    let force = params.force.unwrap_or(false);
+    let max_age_hours: f64 = params.max_age_hours.unwrap_or_else(|| {
+        std::env::var("PIPELINE_MAX_AGE_HOURS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(12.0)
+    });
+
+    let mut group_details = Vec::with_capacity(requested_groups.len());
+    let mut total_synced = 0usize;
+    let mut freshly_synced_count = 0usize;
+    let mut skipped_fresh_count = 0usize;
+
+    for group in requested_groups {
+        let res = DiscoveryPipeline::sync_group_with_freshness(&repo, group, max_age_hours, force)
+            .await
+            .map_err(AppError::InternalServerError)?;
+
+        total_synced += res.synced_count;
+        if res.status == "synced" {
+            freshly_synced_count += 1;
+        } else {
+            skipped_fresh_count += 1;
+        }
+
+        group_details.push(PipelineGroupSyncDetail {
+            group: res.group,
+            synced_count: res.synced_count,
+            status: res.status,
+            last_synced_at: res.last_synced_at,
+            age_hours: res.age_hours,
+        });
+    }
+
+    let group_label = if raw_input.trim().is_empty() {
+        "curated".to_string()
+    } else {
+        raw_input.trim().to_string()
     };
 
-    let group_name = group.as_str().to_string();
+    let available_groups = CelesTrakGroup::all_names()
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect();
 
-    let synced_count = DiscoveryPipeline::sync_group(&repo, group)
-        .await
-        .map_err(AppError::InternalServerError)?;
+    let message = if skipped_fresh_count > 0 && freshly_synced_count == 0 {
+        format!(
+            "All requested groups ({}) are up-to-date (within {:.1}h max age limit). CelesTrak requests were skipped to prevent spam. Pass ?force=true to override.",
+            group_label, max_age_hours
+        )
+    } else if skipped_fresh_count > 0 {
+        format!(
+            "Synced {} satellites across {} groups; {} groups were already fresh within {:.1}h limit.",
+            total_synced, freshly_synced_count, skipped_fresh_count, max_age_hours
+        )
+    } else if group_details.len() == 1 {
+        format!(
+            "Successfully synced {} satellites for group '{}' (max age: {:.1}h)",
+            total_synced, group_details[0].group, max_age_hours
+        )
+    } else {
+        let names: Vec<&str> = group_details.iter().map(|g| g.group.as_str()).collect();
+        format!(
+            "Successfully synced {} satellites across {} groups ({})",
+            total_synced,
+            group_details.len(),
+            names.join(", ")
+        )
+    };
 
     Ok(Json(PipelineSyncResponse {
-        group: group_name.clone(),
-        synced_count,
-        message: format!(
-            "Successfully synced {} satellites for group '{}'",
-            synced_count, group_name
-        ),
+        group: group_label,
+        synced_count: total_synced,
+        message,
+        groups: Some(group_details),
+        available_groups: Some(available_groups),
+        max_age_hours: Some(max_age_hours),
+        force: Some(force),
     }))
 }
 
