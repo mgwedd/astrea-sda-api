@@ -262,7 +262,7 @@
           "Pipelines"
         ],
         "summary": "Trigger CelesTrak Pipeline Sync",
-        "description": "Triggers automated CelesTrak discovery pipeline synchronization for a specific satellite group. Protected by JWT auth (requires 'editor' or 'admin' role).",
+        "description": "Triggers automated CelesTrak discovery pipeline synchronization for a specific satellite group. Protected by JWT auth (requires 'admin' role).",
         "operationId": "triggerPipelineSync",
         "parameters": [
           {

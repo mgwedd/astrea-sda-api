@@ -115,6 +115,45 @@ jobs:
       - name: Run Fern Spec Check
         run: fern check --warnings
 
+      - name: Analyze Conventional Commits & Version Bump
+        id: analyze_version
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: mathieudutour/github-tag-action@v7
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          default_bump: patch
+          custom_release_rules: 'fix:patch,chore:patch:Maintenance,docs:patch:Documentation,refactor:patch,perf:patch,style:patch,build:patch,ci:patch,test:patch,feat:minor'
+          parse_squash_commits: true
+          release_branches: 'main'
+          dry_run: true
+
+      - name: Guard Against Breaking Changes Gate
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          RELEASE_TYPE="${{ steps.analyze_version.outputs.release_type }}"
+          echo "Detected conventional commit release type: $RELEASE_TYPE"
+          
+          # Check 1: Release type computed by conventional commit analyzer
+          if [ "$RELEASE_TYPE" = "major" ]; then
+            echo "::error title=Breaking Change Blocked::A breaking change (major bump) was detected in conventional commits on main! Automated SDK releases block breaking changes to protect client stability. Release aborted."
+            exit 1
+          fi
+
+          # Check 2: Direct scan of commit messages since previous tag for breaking indicators
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            COMMIT_LOG=$(git log ${PREV_TAG}..HEAD --format="%s%n%b")
+          else
+            COMMIT_LOG=$(git log -n 10 --format="%s%n%b")
+          fi
+
+          if echo "$COMMIT_LOG" | grep -E -q '(^[a-zA-Z]+(\([^\)]+\))?!:|^BREAKING CHANGE:|^BREAKING-CHANGE:)'; then
+            echo "::error title=Breaking Change Blocked::Commit message contains breaking change indicator (!: or BREAKING CHANGE:)! Automated SDK releases block breaking changes on main. Release aborted."
+            exit 1
+          fi
+
+          echo "Conventional commit verification passed: Release type is non-breaking ($RELEASE_TYPE)."
+
       - name: Determine Version Bump & Create Tag
         id: bump_tag
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -122,7 +161,7 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           default_bump: patch
-          custom_release_rules: 'fix:patch,chore:patch:Maintenance,refactor:patch,perf:patch,docs:patch,style:patch,build:patch,ci:patch,test:patch,feat:minor'
+          custom_release_rules: 'fix:patch,chore:patch:Maintenance,docs:patch:Documentation,refactor:patch,perf:patch,style:patch,build:patch,ci:patch,test:patch,feat:minor'
           parse_squash_commits: true
           release_branches: 'main'
 
