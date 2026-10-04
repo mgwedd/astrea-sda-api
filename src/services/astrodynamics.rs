@@ -1,9 +1,12 @@
 use crate::error::AppError;
 use crate::models::{
-    ConjunctionMatch, ConjunctionSearchResponse, DopplerResponse, GeoJsonFeature, GeoJsonGeometry,
-    GroundTrackPoint, GroundTrackResponse, IlluminationResponse, LightingState,
-    NextVisiblePassResponse, ObserverTwilightState, OverheadResponse, Satellite, SatelliteSummary,
-    TransitMatch, TransitPredictionResponse, TransitTarget,
+    CollisionProbabilityResponse, ConjunctionMatch, ConjunctionSearchResponse, DecayWatchResponse,
+    DopplerResponse, GeoJsonFeature, GeoJsonGeometry, GroundTrackPoint, GroundTrackResponse,
+    IlluminationResponse, KeplerianElements, LightingState, NextVisiblePassResponse,
+    ObserverTwilightState, OverheadResponse, PassScheduleResponse, RelativeMotionPoint,
+    RelativeMotionResponse, Satellite, SatelliteDecayRiskResponse, SatellitePass,
+    SatelliteStateResponse, SatelliteSummary, TransitMatch, TransitPredictionResponse,
+    TransitTarget,
 };
 use chrono::{DateTime, Utc};
 use rayon::prelude::*;
@@ -688,6 +691,56 @@ pub fn calculate_illumination(
     })
 }
 
+/// Computes Foster 2D encounter-plane collision probability (Pc)
+pub fn calculate_foster_collision_probability(
+    miss_distance_km: f64,
+    relative_velocity_kms: f64,
+    hard_body_radius_m: f64,
+    combined_uncertainty_m: f64,
+) -> CollisionProbabilityResponse {
+    let d_m = (miss_distance_km * 1000.0).max(0.0);
+    let r_hbr = hard_body_radius_m.max(0.1);
+    let sigma = combined_uncertainty_m.max(1.0);
+
+    // Foster 2D / Akella-Alfriend encounter plane approximation:
+    // Pc = exp(-d^2 / (2 * sigma^2)) * (1 - exp(-r_hbr^2 / (2 * sigma^2)))
+    let exp_miss = (-d_m * d_m / (2.0 * sigma * sigma)).exp();
+    let collision_disk = 1.0 - (-r_hbr * r_hbr / (2.0 * sigma * sigma)).exp();
+    let pc = (exp_miss * collision_disk).clamp(0.0, 1.0);
+
+    let (risk_category, recommendation) = if pc >= 1e-4 {
+        (
+            "Critical (Pc >= 1e-4)".to_string(),
+            "Immediate collision avoidance maneuver (CAM) planning recommended.".to_string(),
+        )
+    } else if pc >= 1e-5 {
+        (
+            "Elevated (1e-5 <= Pc < 1e-4)".to_string(),
+            "Elevated conjunction risk; monitor tracking updates closely.".to_string(),
+        )
+    } else if pc >= 1e-7 {
+        (
+            "Low (1e-7 <= Pc < 1e-5)".to_string(),
+            "Conjunction watch active; routine tracking monitoring.".to_string(),
+        )
+    } else {
+        (
+            "Negligible (Pc < 1e-7)".to_string(),
+            "Collision probability negligible; no maneuver action required.".to_string(),
+        )
+    };
+
+    CollisionProbabilityResponse {
+        miss_distance_km,
+        relative_velocity_kms,
+        hard_body_radius_m: r_hbr,
+        combined_uncertainty_m: sigma,
+        collision_probability: pc,
+        risk_category,
+        recommendation,
+    }
+}
+
 /// Multi-threaded conjunction and satellite collision radar using Rayon `par_iter()`
 pub fn find_conjunctions(
     satellites: &[Satellite],
@@ -821,6 +874,8 @@ pub fn find_conjunctions(
             }
 
             if min_dist_km <= max_distance_km {
+                let pc_calc =
+                    calculate_foster_collision_probability(min_dist_km, rel_vel_kms, 10.0, 50.0);
                 Some(ConjunctionMatch {
                     satellite_a: SatelliteSummary {
                         id: sat_a.id,
@@ -833,6 +888,8 @@ pub fn find_conjunctions(
                     closest_approach_time: closest_time,
                     min_distance_km: min_dist_km,
                     relative_velocity_kms: rel_vel_kms,
+                    collision_probability: Some(pc_calc.collision_probability),
+                    risk_category: Some(pc_calc.risk_category),
                 })
             } else {
                 None
@@ -1090,4 +1147,598 @@ pub fn find_transits(
         transits_found: results.len(),
         results,
     })
+}
+
+/// Multi-day ground station pass prediction and scheduling engine
+#[allow(clippy::too_many_arguments)]
+pub fn find_pass_schedule(
+    satellite: &Satellite,
+    lat: f64,
+    lon: f64,
+    alt_m: f64,
+    start_time: DateTime<Utc>,
+    elevation_threshold_deg: f64,
+    duration_days: usize,
+    visible_only: bool,
+) -> Result<PassScheduleResponse, AppError> {
+    let days = duration_days.clamp(1, 14);
+    let total_minutes = (days * 24 * 60) as i64;
+    let threshold = elevation_threshold_deg.clamp(-10.0, 89.0);
+
+    let elev = |t: DateTime<Utc>| {
+        calculate_look_angles(satellite, lat, lon, alt_m, t)
+            .map(|l| l.elevation)
+            .unwrap_or(f64::NEG_INFINITY)
+    };
+
+    let mut passes = Vec::new();
+    let mut pass_id = 1;
+    let mut k: i64 = 0;
+
+    while k < total_minutes {
+        let t_curr = start_time + chrono::Duration::minutes(k);
+        let e_curr = elev(t_curr);
+
+        if e_curr >= threshold {
+            // Find AOS (crossing threshold from below)
+            let mut below = t_curr - chrono::Duration::minutes(1);
+            let mut above = t_curr;
+            let aos_time = if k == 0 {
+                start_time
+            } else {
+                while (above - below).num_milliseconds() > 1000 {
+                    let mid = below + (above - below) / 2;
+                    if elev(mid) >= threshold {
+                        above = mid;
+                    } else {
+                        below = mid;
+                    }
+                }
+                above
+            };
+
+            let aos_look = calculate_look_angles(satellite, lat, lon, alt_m, aos_time)?;
+
+            // Trace forward to find LOS (crossing threshold back below)
+            let mut t_scan = t_curr + chrono::Duration::minutes(1);
+            let mut peak_time = t_curr;
+            let mut peak_elev = e_curr;
+
+            while k < total_minutes {
+                let e_scan = elev(t_scan);
+                if e_scan > peak_elev {
+                    peak_elev = e_scan;
+                    peak_time = t_scan;
+                }
+                if e_scan < threshold {
+                    break;
+                }
+                t_scan += chrono::Duration::minutes(1);
+                k += 1;
+            }
+
+            let los_time = if k >= total_minutes {
+                start_time + chrono::Duration::minutes(total_minutes)
+            } else {
+                let mut los_above = t_scan - chrono::Duration::minutes(1);
+                let mut los_below = t_scan;
+                while (los_below - los_above).num_milliseconds() > 1000 {
+                    let mid = los_above + (los_below - los_above) / 2;
+                    if elev(mid) >= threshold {
+                        los_above = mid;
+                    } else {
+                        los_below = mid;
+                    }
+                }
+                los_below
+            };
+
+            // Refine peak elevation with golden section search around peak_time
+            let gr = 0.618_033_988_75;
+            let (mut lo_t, mut hi_t) = (
+                peak_time - chrono::Duration::minutes(1),
+                peak_time + chrono::Duration::minutes(1),
+            );
+            if lo_t < aos_time {
+                lo_t = aos_time;
+            }
+            if hi_t > los_time {
+                hi_t = los_time;
+            }
+
+            while (hi_t - lo_t).num_milliseconds() > 1000 {
+                let diff_ms = (hi_t - lo_t).num_milliseconds() as f64;
+                let m1 = hi_t - chrono::Duration::milliseconds((gr * diff_ms) as i64);
+                let m2 = lo_t + chrono::Duration::milliseconds((gr * diff_ms) as i64);
+                if elev(m1) > elev(m2) {
+                    hi_t = m2;
+                } else {
+                    lo_t = m1;
+                }
+            }
+            let tca_time = lo_t + (hi_t - lo_t) / 2;
+            let tca_look = calculate_look_angles(satellite, lat, lon, alt_m, tca_time)?;
+            let los_look = calculate_look_angles(satellite, lat, lon, alt_m, los_time)?;
+
+            let duration_sec = (los_time - aos_time).num_milliseconds() as f64 / 1000.0;
+
+            // Illumination and visibility at TCA
+            let is_visible = match calculate_illumination(satellite, lat, lon, alt_m, tca_time) {
+                Ok(illum) => illum.is_visibly_observable,
+                Err(_) => false,
+            };
+
+            let visual_magnitude = if is_visible {
+                let mag = 2.5 + 5.0 * (tca_look.range_km / 1000.0).max(0.1).log10();
+                Some((mag * 10.0).round() / 10.0)
+            } else {
+                None
+            };
+
+            if !visible_only || is_visible {
+                passes.push(SatellitePass {
+                    pass_id,
+                    aos_time,
+                    aos_azimuth_deg: (aos_look.azimuth * 100.0).round() / 100.0,
+                    aos_elevation_deg: (aos_look.elevation * 100.0).round() / 100.0,
+                    tca_time,
+                    tca_azimuth_deg: (tca_look.azimuth * 100.0).round() / 100.0,
+                    max_elevation_deg: (tca_look.elevation * 100.0).round() / 100.0,
+                    tca_range_km: (tca_look.range_km * 10.0).round() / 10.0,
+                    los_time,
+                    los_azimuth_deg: (los_look.azimuth * 100.0).round() / 100.0,
+                    los_elevation_deg: (los_look.elevation * 100.0).round() / 100.0,
+                    duration_seconds: (duration_sec * 10.0).round() / 10.0,
+                    is_visible,
+                    visual_magnitude,
+                });
+                pass_id += 1;
+            }
+        }
+        k += 1;
+    }
+
+    Ok(PassScheduleResponse {
+        satellite_id: satellite.id,
+        satellite_name: satellite.name.clone(),
+        observer_lat: lat,
+        observer_lon: lon,
+        observer_alt_m: alt_m,
+        elevation_threshold_deg: threshold,
+        forecast_days: days,
+        passes_found: passes.len(),
+        passes,
+    })
+}
+
+/// Evaluates relative position and velocity vectors in Local-Vertical Local-Horizontal (LVLH / Hill's) frame
+pub fn calculate_relative_motion(
+    primary: &Satellite,
+    target: &Satellite,
+    epoch: DateTime<Utc>,
+    duration_minutes: usize,
+    step_seconds: usize,
+) -> Result<RelativeMotionResponse, AppError> {
+    let line1_p = normalize_tle_line(&primary.tle.line_one, '1');
+    let line2_p = normalize_tle_line(&primary.tle.line_two, '2');
+    let elem_p = Elements::from_tle(
+        Some(primary.name.clone()),
+        line1_p.as_bytes(),
+        line2_p.as_bytes(),
+    )
+    .map_err(|e| AppError::Sgp4Error(format!("Failed to parse primary TLE: {:?}", e)))?;
+    let const_p = Constants::from_elements(&elem_p)
+        .map_err(|e| AppError::Sgp4Error(format!("Primary constants error: {:?}", e)))?;
+    let epoch_p = DateTime::<Utc>::from_naive_utc_and_offset(elem_p.datetime, Utc);
+
+    let line1_t = normalize_tle_line(&target.tle.line_one, '1');
+    let line2_t = normalize_tle_line(&target.tle.line_two, '2');
+    let elem_t = Elements::from_tle(
+        Some(target.name.clone()),
+        line1_t.as_bytes(),
+        line2_t.as_bytes(),
+    )
+    .map_err(|e| AppError::Sgp4Error(format!("Failed to parse target TLE: {:?}", e)))?;
+    let const_t = Constants::from_elements(&elem_t)
+        .map_err(|e| AppError::Sgp4Error(format!("Target constants error: {:?}", e)))?;
+    let epoch_t = DateTime::<Utc>::from_naive_utc_and_offset(elem_t.datetime, Utc);
+
+    let compute_pt = |t: DateTime<Utc>| -> Result<(RelativeMotionPoint, [f64; 3]), AppError> {
+        let dt_p = (t - epoch_p).num_milliseconds() as f64 / 60000.0;
+        let dt_t = (t - epoch_t).num_milliseconds() as f64 / 60000.0;
+
+        let pred_p = const_p
+            .propagate(dt_p)
+            .map_err(|e| AppError::Sgp4Error(format!("Primary SGP4 error: {:?}", e)))?;
+        let pred_t = const_t
+            .propagate(dt_t)
+            .map_err(|e| AppError::Sgp4Error(format!("Target SGP4 error: {:?}", e)))?;
+
+        let rp = pred_p.position;
+        let vp = pred_p.velocity;
+        let rt = pred_t.position;
+        let vt = pred_t.velocity;
+
+        let rp_mag = (rp[0] * rp[0] + rp[1] * rp[1] + rp[2] * rp[2]).sqrt();
+        if rp_mag < 1.0 {
+            return Err(AppError::InternalServerError(
+                "Primary satellite orbital radius near zero".to_string(),
+            ));
+        }
+
+        // Hill's frame unit vectors:
+        // Radial e_r = r / |r|
+        let er = [rp[0] / rp_mag, rp[1] / rp_mag, rp[2] / rp_mag];
+
+        // Angular momentum h = r x v
+        let h_vec = [
+            rp[1] * vp[2] - rp[2] * vp[1],
+            rp[2] * vp[0] - rp[0] * vp[2],
+            rp[0] * vp[1] - rp[1] * vp[0],
+        ];
+        let h_mag = (h_vec[0] * h_vec[0] + h_vec[1] * h_vec[1] + h_vec[2] * h_vec[2]).sqrt();
+        if h_mag < 1e-6 {
+            return Err(AppError::InternalServerError(
+                "Angular momentum near zero".to_string(),
+            ));
+        }
+
+        // Cross-track e_c = h / |h|
+        let ec = [h_vec[0] / h_mag, h_vec[1] / h_mag, h_vec[2] / h_mag];
+
+        // In-track e_i = e_c x e_r
+        let ei = [
+            ec[1] * er[2] - ec[2] * er[1],
+            ec[2] * er[0] - ec[0] * er[2],
+            ec[0] * er[1] - ec[1] * er[0],
+        ];
+
+        // Relative position in ECI
+        let dr = [rt[0] - rp[0], rt[1] - rp[1], rt[2] - rp[2]];
+        let radial_km = dr[0] * er[0] + dr[1] * er[1] + dr[2] * er[2];
+        let in_track_km = dr[0] * ei[0] + dr[1] * ei[1] + dr[2] * ei[2];
+        let cross_track_km = dr[0] * ec[0] + dr[1] * ec[1] + dr[2] * ec[2];
+        let range_km = (dr[0] * dr[0] + dr[1] * dr[1] + dr[2] * dr[2]).sqrt();
+
+        // Orbit angular velocity vector w = h / |r|^2
+        let omega = [
+            h_vec[0] / (rp_mag * rp_mag),
+            h_vec[1] / (rp_mag * rp_mag),
+            h_vec[2] / (rp_mag * rp_mag),
+        ];
+        // Inertial relative velocity
+        let dv = [vt[0] - vp[0], vt[1] - vp[1], vt[2] - vp[2]];
+        // Apparent velocity in rotating frame: v_rel = dv - (omega x dr)
+        let w_cross_dr = [
+            omega[1] * dr[2] - omega[2] * dr[1],
+            omega[2] * dr[0] - omega[0] * dr[2],
+            omega[0] * dr[1] - omega[1] * dr[0],
+        ];
+        let v_rel = [
+            dv[0] - w_cross_dr[0],
+            dv[1] - w_cross_dr[1],
+            dv[2] - w_cross_dr[2],
+        ];
+
+        let v_radial = v_rel[0] * er[0] + v_rel[1] * er[1] + v_rel[2] * er[2];
+        let v_in_track = v_rel[0] * ei[0] + v_rel[1] * ei[1] + v_rel[2] * ei[2];
+        let v_cross_track = v_rel[0] * ec[0] + v_rel[1] * ec[1] + v_rel[2] * ec[2];
+
+        let range_rate_kms = (dr[0] * dv[0] + dr[1] * dv[1] + dr[2] * dv[2]) / range_km.max(1e-6);
+
+        Ok((
+            RelativeMotionPoint {
+                timestamp: t,
+                radial_km,
+                in_track_km,
+                cross_track_km,
+                range_km,
+                range_rate_kms,
+            },
+            [v_radial, v_in_track, v_cross_track],
+        ))
+    };
+
+    let (initial_pt, v_components) = compute_pt(epoch)?;
+
+    let rpo_regime = if initial_pt.range_km < 1.0 {
+        "Mating / Docking Box (< 1 km)".to_string()
+    } else if initial_pt.range_km < 10.0 {
+        "Close Proximity / Inspection Zone (1 - 10 km)".to_string()
+    } else if initial_pt.range_km < 100.0 {
+        "Intermediate Proximity Operations (10 - 100 km)".to_string()
+    } else if initial_pt.range_km < 1000.0 {
+        "Far-Field Rendezvous Operations (100 - 1000 km)".to_string()
+    } else {
+        "Co-orbital Drift / Distant Tracking (> 1000 km)".to_string()
+    };
+
+    let trajectory = if duration_minutes > 0 {
+        let dur_mins = duration_minutes.min(1440);
+        let step_s = step_seconds.clamp(5, 300);
+        let total_secs = dur_mins * 60;
+        let mut pts = Vec::with_capacity(total_secs / step_s + 1);
+
+        for sec in (0..=total_secs).step_by(step_s) {
+            let t = epoch + chrono::Duration::seconds(sec as i64);
+            if let Ok((pt, _)) = compute_pt(t) {
+                pts.push(pt);
+            }
+        }
+        Some(pts)
+    } else {
+        None
+    };
+
+    Ok(RelativeMotionResponse {
+        primary_satellite: SatelliteSummary {
+            id: primary.id,
+            name: primary.name.clone(),
+        },
+        target_satellite: SatelliteSummary {
+            id: target.id,
+            name: target.name.clone(),
+        },
+        epoch,
+        relative_distance_km: (initial_pt.range_km * 1000.0).round() / 1000.0,
+        range_rate_kms: (initial_pt.range_rate_kms * 10000.0).round() / 10000.0,
+        radial_distance_km: (initial_pt.radial_km * 1000.0).round() / 1000.0,
+        in_track_distance_km: (initial_pt.in_track_km * 1000.0).round() / 1000.0,
+        cross_track_distance_km: (initial_pt.cross_track_km * 1000.0).round() / 1000.0,
+        radial_velocity_kms: (v_components[0] * 10000.0).round() / 10000.0,
+        in_track_velocity_kms: (v_components[1] * 10000.0).round() / 10000.0,
+        cross_track_velocity_kms: (v_components[2] * 10000.0).round() / 10000.0,
+        rpo_regime,
+        trajectory,
+    })
+}
+
+/// Computes state vector (ECI, ECEF, Geodetic) and osculating Keplerian orbital elements
+pub fn calculate_satellite_state(
+    satellite: &Satellite,
+    epoch: DateTime<Utc>,
+) -> Result<SatelliteStateResponse, AppError> {
+    let line1 = normalize_tle_line(&satellite.tle.line_one, '1');
+    let line2 = normalize_tle_line(&satellite.tle.line_two, '2');
+
+    let elements = Elements::from_tle(
+        Some(satellite.name.clone()),
+        line1.as_bytes(),
+        line2.as_bytes(),
+    )
+    .map_err(|e| AppError::Sgp4Error(format!("Failed to parse TLE: {:?}", e)))?;
+
+    let constants = Constants::from_elements(&elements)
+        .map_err(|e| AppError::Sgp4Error(format!("Constants error: {:?}", e)))?;
+
+    let epoch_dt = DateTime::<Utc>::from_naive_utc_and_offset(elements.datetime, Utc);
+    let minutes_since_epoch = (epoch - epoch_dt).num_milliseconds() as f64 / 60000.0;
+
+    let prediction = constants
+        .propagate(minutes_since_epoch)
+        .map_err(|e| AppError::Sgp4Error(format!("SGP4 propagation error: {:?}", e)))?;
+
+    let pos_eci = prediction.position;
+    let vel_eci = prediction.velocity;
+
+    let lst = calculate_local_sidereal_time(epoch, 0.0);
+    let pos_ecef = eci_to_ecf(pos_eci, lst);
+    let vel_ecef = eci_to_ecf_velocity(pos_eci, vel_eci, lst);
+
+    let (latitude_deg, longitude_deg, altitude_km) = ecf_to_geodetic(pos_ecef);
+
+    // Compute osculating Keplerian orbital elements
+    let mu = 398_600.441_8; // Earth gravitational parameter km^3 / s^2
+    let re = 6378.137; // WGS-84 radius km
+
+    let r = (pos_eci[0] * pos_eci[0] + pos_eci[1] * pos_eci[1] + pos_eci[2] * pos_eci[2]).sqrt();
+    let v = (vel_eci[0] * vel_eci[0] + vel_eci[1] * vel_eci[1] + vel_eci[2] * vel_eci[2]).sqrt();
+
+    // Specific angular momentum h = r x v
+    let h_vec = [
+        pos_eci[1] * vel_eci[2] - pos_eci[2] * vel_eci[1],
+        pos_eci[2] * vel_eci[0] - pos_eci[0] * vel_eci[2],
+        pos_eci[0] * vel_eci[1] - pos_eci[1] * vel_eci[0],
+    ];
+    let h = (h_vec[0] * h_vec[0] + h_vec[1] * h_vec[1] + h_vec[2] * h_vec[2]).sqrt();
+
+    // Specific orbital energy
+    let energy = (v * v) / 2.0 - mu / r;
+    let semi_major_axis_km = -mu / (2.0 * energy);
+
+    // Eccentricity vector e = ((v^2 - mu/r)*r - (r.v)*v) / mu
+    let r_dot_v = pos_eci[0] * vel_eci[0] + pos_eci[1] * vel_eci[1] + pos_eci[2] * vel_eci[2];
+    let e_vec = [
+        ((v * v - mu / r) * pos_eci[0] - r_dot_v * vel_eci[0]) / mu,
+        ((v * v - mu / r) * pos_eci[1] - r_dot_v * vel_eci[1]) / mu,
+        ((v * v - mu / r) * pos_eci[2] - r_dot_v * vel_eci[2]) / mu,
+    ];
+    let eccentricity = (e_vec[0] * e_vec[0] + e_vec[1] * e_vec[1] + e_vec[2] * e_vec[2]).sqrt();
+
+    let inclination_deg = (h_vec[2] / h).clamp(-1.0, 1.0).acos().to_degrees();
+
+    // Line of nodes n = z_unit x h = [-h_y, h_x, 0]
+    let n_vec = [-h_vec[1], h_vec[0], 0.0];
+    let n_mag = (n_vec[0] * n_vec[0] + n_vec[1] * n_vec[1]).sqrt();
+
+    let raan_deg = if n_mag > 1e-8 {
+        let mut raan = (n_vec[0] / n_mag).clamp(-1.0, 1.0).acos().to_degrees();
+        if n_vec[1] < 0.0 {
+            raan = 360.0 - raan;
+        }
+        raan
+    } else {
+        0.0
+    };
+
+    let arg_of_perigee_deg = if n_mag > 1e-8 && eccentricity > 1e-6 {
+        let dot = (n_vec[0] * e_vec[0] + n_vec[1] * e_vec[1]) / (n_mag * eccentricity);
+        let mut arg = dot.clamp(-1.0, 1.0).acos().to_degrees();
+        if e_vec[2] < 0.0 {
+            arg = 360.0 - arg;
+        }
+        arg
+    } else {
+        0.0
+    };
+
+    let true_anomaly_deg = if eccentricity > 1e-6 {
+        let dot = (e_vec[0] * pos_eci[0] + e_vec[1] * pos_eci[1] + e_vec[2] * pos_eci[2])
+            / (eccentricity * r);
+        let mut nu = dot.clamp(-1.0, 1.0).acos().to_degrees();
+        if r_dot_v < 0.0 {
+            nu = 360.0 - nu;
+        }
+        nu
+    } else {
+        0.0
+    };
+
+    // Mean anomaly from true anomaly via eccentric anomaly E
+    let nu_rad = true_anomaly_deg.to_radians();
+    let cos_e = (eccentricity + nu_rad.cos()) / (1.0 + eccentricity * nu_rad.cos());
+    let sin_e = ((1.0 - eccentricity * eccentricity).max(0.0).sqrt() * nu_rad.sin())
+        / (1.0 + eccentricity * nu_rad.cos());
+    let e_anom_rad = sin_e.atan2(cos_e);
+    let mean_anom_rad = e_anom_rad - eccentricity * e_anom_rad.sin();
+    let mut mean_anomaly_deg = mean_anom_rad.to_degrees() % 360.0;
+    if mean_anomaly_deg < 0.0 {
+        mean_anomaly_deg += 360.0;
+    }
+
+    let orbital_period_minutes =
+        (2.0 * std::f64::consts::PI * (semi_major_axis_km.powi(3) / mu).sqrt()) / 60.0;
+    let perigee_altitude_km = semi_major_axis_km * (1.0 - eccentricity) - re;
+    let apogee_altitude_km = semi_major_axis_km * (1.0 + eccentricity) - re;
+
+    Ok(SatelliteStateResponse {
+        satellite_id: satellite.id,
+        satellite_name: satellite.name.clone(),
+        epoch,
+        position_eci_km: pos_eci,
+        velocity_eci_kms: vel_eci,
+        position_ecef_km: pos_ecef,
+        velocity_ecef_kms: vel_ecef,
+        latitude_deg: (latitude_deg * 10000.0).round() / 10000.0,
+        longitude_deg: (longitude_deg * 10000.0).round() / 10000.0,
+        altitude_km: (altitude_km * 100.0).round() / 100.0,
+        keplerian_elements: KeplerianElements {
+            semi_major_axis_km: (semi_major_axis_km * 100.0).round() / 100.0,
+            eccentricity: (eccentricity * 1000000.0).round() / 1000000.0,
+            inclination_deg: (inclination_deg * 10000.0).round() / 10000.0,
+            raan_deg: (raan_deg * 10000.0).round() / 10000.0,
+            arg_of_perigee_deg: (arg_of_perigee_deg * 10000.0).round() / 10000.0,
+            true_anomaly_deg: (true_anomaly_deg * 10000.0).round() / 10000.0,
+            mean_anomaly_deg: (mean_anomaly_deg * 10000.0).round() / 10000.0,
+            orbital_period_minutes: (orbital_period_minutes * 100.0).round() / 100.0,
+            perigee_altitude_km: (perigee_altitude_km * 100.0).round() / 100.0,
+            apogee_altitude_km: (apogee_altitude_km * 100.0).round() / 100.0,
+        },
+    })
+}
+
+/// Evaluates atmospheric drag decay rate, perigee altitude, and re-entry risk for a satellite
+pub fn calculate_decay_risk(satellite: &Satellite) -> Result<SatelliteDecayRiskResponse, AppError> {
+    let line1 = normalize_tle_line(&satellite.tle.line_one, '1');
+    let line2 = normalize_tle_line(&satellite.tle.line_two, '2');
+
+    let elements = Elements::from_tle(
+        Some(satellite.name.clone()),
+        line1.as_bytes(),
+        line2.as_bytes(),
+    )
+    .map_err(|e| AppError::Sgp4Error(format!("Failed to parse TLE: {:?}", e)))?;
+
+    let mu = 398_600.441_8;
+    let re = 6378.137;
+    let n_rad_s = elements.mean_motion * 2.0 * std::f64::consts::PI / 86400.0;
+    let semi_major_axis = (mu / (n_rad_s * n_rad_s)).cbrt();
+
+    let ecc = elements.eccentricity;
+    let perigee_altitude_km = semi_major_axis * (1.0 - ecc) - re;
+    let apogee_altitude_km = semi_major_axis * (1.0 + ecc) - re;
+    let bstar = elements.drag_term;
+    let mean_motion_derivative = elements.mean_motion_dot * 2.0;
+
+    let (decay_status, lifetime_days, risk_score) = if perigee_altitude_km < 150.0 {
+        let life =
+            (perigee_altitude_km - 80.0).max(0.1) / (15.0 + (bstar.abs() * 50000.0).min(50.0));
+        (
+            "Critical Re-entry Imminent (< 48 hrs)".to_string(),
+            Some((life * 10.0).round() / 10.0),
+            (100.0 - (perigee_altitude_km - 100.0).clamp(0.0, 50.0) * 0.1).clamp(0.0, 100.0),
+        )
+    } else if perigee_altitude_km < 200.0 {
+        let life = 2.0 + (perigee_altitude_km - 150.0) * 0.24 / (1.0 + bstar.abs() * 500.0);
+        (
+            "High Risk / Imminent Re-entry (< 2 weeks)".to_string(),
+            Some((life * 10.0).round() / 10.0),
+            (85.0 + (200.0 - perigee_altitude_km) * 0.3).clamp(0.0, 100.0),
+        )
+    } else if perigee_altitude_km < 300.0 {
+        let life = 14.0 + (perigee_altitude_km - 200.0) * 1.5 / (1.0 + bstar.abs() * 200.0);
+        (
+            "Moderate Risk / Active Orbital Decay".to_string(),
+            Some((life * 10.0).round() / 10.0),
+            (50.0 + (300.0 - perigee_altitude_km) * 0.35).clamp(0.0, 100.0),
+        )
+    } else if perigee_altitude_km < 500.0 {
+        let life = 180.0 + (perigee_altitude_km - 300.0) * 8.0 / (1.0 + bstar.abs() * 100.0);
+        (
+            "Low Risk / Long-Term LEO Decay".to_string(),
+            Some((life * 10.0).round() / 10.0),
+            (10.0 + (500.0 - perigee_altitude_km) * 0.2).clamp(0.0, 100.0),
+        )
+    } else {
+        (
+            "Stable Orbit / Negligible Drag".to_string(),
+            None,
+            ((600.0 - perigee_altitude_km).max(0.0) * 0.05).clamp(0.0, 9.9),
+        )
+    };
+
+    Ok(SatelliteDecayRiskResponse {
+        satellite_id: satellite.id,
+        satellite_name: satellite.name.clone(),
+        perigee_altitude_km: (perigee_altitude_km * 10.0).round() / 10.0,
+        apogee_altitude_km: (apogee_altitude_km * 10.0).round() / 10.0,
+        bstar_drag: bstar,
+        mean_motion_derivative_rev_day2: mean_motion_derivative,
+        orbital_lifetime_days_estimate: lifetime_days,
+        decay_status,
+        reentry_risk_score: (risk_score * 10.0).round() / 10.0,
+    })
+}
+
+/// Catalog-wide scan for decaying satellites and uncontrolled re-entry hazards
+pub fn scan_decay_watch(
+    satellites: &[Satellite],
+    max_perigee_km: f64,
+    min_bstar: f64,
+    limit: usize,
+) -> DecayWatchResponse {
+    let mut objects: Vec<SatelliteDecayRiskResponse> = satellites
+        .par_iter()
+        .filter_map(|sat| {
+            calculate_decay_risk(sat).ok().filter(|risk| {
+                risk.perigee_altitude_km <= max_perigee_km || risk.bstar_drag >= min_bstar
+            })
+        })
+        .collect();
+
+    objects.sort_by(|a, b| {
+        b.reentry_risk_score
+            .partial_cmp(&a.reentry_risk_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    objects.truncate(limit.clamp(1, 500));
+
+    DecayWatchResponse {
+        scanned_satellites_count: satellites.len(),
+        decaying_satellites_found: objects.len(),
+        threshold_perigee_km: max_perigee_km,
+        threshold_bstar: min_bstar,
+        objects,
+    }
 }

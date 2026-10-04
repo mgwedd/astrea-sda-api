@@ -68,37 +68,67 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 ## 🚀 Key Capabilities
 
 * ⚡ **Sub-Millisecond SGP4 Engine**: High-performance astrodynamics built on Axum 0.7, Tokio, and SGP4 with Rayon multi-core CPU parallelism.
-* 📍 **Pass & Visibility Predictions**: Topocentric look angles (Azimuth, Elevation, Range, Range Rate), Doppler shift, and AOS/LOS next-visible window calculations.
+* 📡 **Pass & Visibility Predictions**: Topocentric look angles (Azimuth, Elevation, Range, Range Rate), Doppler shift, and multi-day ground station pass schedules (`/v1/satellites/{id}/passes`).
+* 🎯 **RPO & Relative Motion (Hill / LVLH Frame)**: Local-Vertical Local-Horizontal frame tracking (radial, in-track, cross-track) and proximity operations regime classification (`/v1/satellites/{id}/relative-motion`).
+* 🧭 **State Vectors & Keplerian Elements**: Instantaneous ECI (TEME), ECEF, Geodetic positions and osculating Keplerian orbital elements (`/v1/satellites/{id}/state`).
+* ☄️ **Atmospheric Drag & Orbital Decay Watch**: Real-time ballistic drag $B^*$ decay rate assessment, orbital lifetime estimation, and catalog-wide scanning for uncontrolled re-entry hazards (`/v1/satellites/decay-watch`).
+* 💥 **Foster 2D Conjunction Collision Probability ($P_c$)**: Encounter-plane collision probability calculation using hard-body radius (HBR) and position covariance ellipsoids (`/v1/conjunctions/collision-probability`).
 * 🌍 **3D Ground Tracks & CZML**: Generate 3D satellite trajectories, GeoJSON feature collections, and Cesium-compatible CZML streams.
-* 🛰️ **Maneuver Reconstruction**: Detect orbital maneuvers and station-keeping delta-V burns via mean-motion and semimajor-axis residual drift across TLE epochs.
+* 🛰️ **Maneuver & Anomaly Detection**: Detect orbital maneuvers and station-keeping delta-V burns via mean-motion and semimajor-axis residual drift across TLE epochs.
 * 🏎️ **Tiered L1/L2 Caching**: Sub-millisecond response caching using an in-memory Moka L1 cache paired with a distributed Redis L2 cache and single-flight coalescing.
 * 🛡️ **Distributed Rate Limiting**: Redis-backed Sliding Window Counter and Token Bucket algorithms enforcing RFC 6585 HTTP 429 quotas.
-* 🔄 **Automated CelesTrak Ingestion**: Background worker syncing active satellite constellations (`stations`, `starlink`, `weather`, `visual`) every 6 hours with 500-record batch transactions.
+* 🔄 **Automated CelesTrak Ingestion**: Background worker syncing active satellite constellations (`stations`, `starlink`, `weather`, `visual`) with freshness gating to prevent spamming.
 * 🔐 **Defense-Grade Authentication**: Dynamic RS256 JWT tokens, RFC 7523 M2M Private Key JWT client assertions, and RFC 8705 mTLS certificate-bound tokens.
 
 ---
 
 ## 🧪 Example API Queries
 
-### 1. Find Overhead Satellites
+### 1. Multi-Day Ground Station Pass Schedule
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" \
-  "https://sda.localtest.me:8443/v1/satellites/overhead?lat=37.7749&lon=-122.4194&alt=150" | jq
+  "https://sda.localtest.me:8443/v1/satellites/<SATELLITE_UUID>/passes?lat=30.2672&lon=-97.7431&threshold_deg=10&duration_days=7" | jq
 ```
 
-### 2. Generate 90-Minute 3D GeoJSON Ground Track
+### 2. Relative Motion & RPO (Hill / LVLH Frame)
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "https://sda.localtest.me:8443/v1/satellites/<PRIMARY_UUID>/relative-motion?target_id=<TARGET_UUID>&duration_minutes=60&step_seconds=60" | jq
+```
+
+### 3. State Vector & Osculating Keplerian Elements
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "https://sda.localtest.me:8443/v1/satellites/<SATELLITE_UUID>/state" | jq
+```
+
+### 4. Atmospheric Drag & Decay Re-Entry Watch
+```bash
+# Scan catalog for debris and satellites falling below 250 km perigee
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "https://sda.localtest.me:8443/v1/satellites/decay-watch?max_perigee_km=250.0" | jq
+```
+
+### 5. Calculate Foster 2D Collision Probability ($P_c$)
+```bash
+curl -s -X POST "https://sda.localtest.me:8443/v1/conjunctions/collision-probability" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "missDistanceKm": 0.05,
+    "relativeVelocityKms": 14.2,
+    "hardBodyRadiusM": 10.0,
+    "combinedPositionUncertaintyM": 50.0
+  }' | jq
+```
+
+### 6. Generate 90-Minute 3D GeoJSON Ground Track
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" \
   "https://sda.localtest.me:8443/v1/satellites/<SATELLITE_UUID>/groundtrack?duration_minutes=90&step_seconds=30&format=geojson" | jq
 ```
 
-### 3. Compute Next Visible Pass
-```bash
-curl -s -H "Authorization: Bearer $TOKEN" \
-  "https://sda.localtest.me:8443/v1/satellites/<SATELLITE_UUID>/next-visible?lat=37.7749&lon=-122.4194&threshold_deg=10" | jq
-```
-
-### 4. Authenticate & Issue Scoped Bearer Token
+### 7. Authenticate & Issue Scoped Bearer Token
 ```bash
 # Generate a local test token for admin operations
 ./scripts/make-jwt.sh operator_user admin

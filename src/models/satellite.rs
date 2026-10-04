@@ -167,6 +167,10 @@ pub struct ConjunctionMatch {
     pub closest_approach_time: DateTime<Utc>,
     pub min_distance_km: f64,
     pub relative_velocity_kms: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collision_probability: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub risk_category: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -188,4 +192,147 @@ pub struct DopplerResponse {
     pub doppler_shift_hz: f64,
     pub corrected_freq_hz: f64,
     pub signal_direction: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SatellitePass {
+    pub pass_id: usize,
+    pub aos_time: DateTime<Utc>,
+    pub aos_azimuth_deg: f64,
+    pub aos_elevation_deg: f64,
+    pub tca_time: DateTime<Utc>,
+    pub tca_azimuth_deg: f64,
+    pub max_elevation_deg: f64,
+    pub tca_range_km: f64,
+    pub los_time: DateTime<Utc>,
+    pub los_azimuth_deg: f64,
+    pub los_elevation_deg: f64,
+    pub duration_seconds: f64,
+    pub is_visible: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visual_magnitude: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PassScheduleResponse {
+    pub satellite_id: Uuid,
+    pub satellite_name: String,
+    pub observer_lat: f64,
+    pub observer_lon: f64,
+    pub observer_alt_m: f64,
+    pub elevation_threshold_deg: f64,
+    pub forecast_days: usize,
+    pub passes_found: usize,
+    pub passes: Vec<SatellitePass>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RelativeMotionPoint {
+    pub timestamp: DateTime<Utc>,
+    pub radial_km: f64,
+    pub in_track_km: f64,
+    pub cross_track_km: f64,
+    pub range_km: f64,
+    pub range_rate_kms: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RelativeMotionResponse {
+    pub primary_satellite: SatelliteSummary,
+    pub target_satellite: SatelliteSummary,
+    pub epoch: DateTime<Utc>,
+    pub relative_distance_km: f64,
+    pub range_rate_kms: f64,
+    pub radial_distance_km: f64,
+    pub in_track_distance_km: f64,
+    pub cross_track_distance_km: f64,
+    pub radial_velocity_kms: f64,
+    pub in_track_velocity_kms: f64,
+    pub cross_track_velocity_kms: f64,
+    pub rpo_regime: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trajectory: Option<Vec<RelativeMotionPoint>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct KeplerianElements {
+    pub semi_major_axis_km: f64,
+    pub eccentricity: f64,
+    pub inclination_deg: f64,
+    pub raan_deg: f64,
+    pub arg_of_perigee_deg: f64,
+    pub true_anomaly_deg: f64,
+    pub mean_anomaly_deg: f64,
+    pub orbital_period_minutes: f64,
+    pub perigee_altitude_km: f64,
+    pub apogee_altitude_km: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SatelliteStateResponse {
+    pub satellite_id: Uuid,
+    pub satellite_name: String,
+    pub epoch: DateTime<Utc>,
+    pub position_eci_km: [f64; 3],
+    pub velocity_eci_kms: [f64; 3],
+    pub position_ecef_km: [f64; 3],
+    pub velocity_ecef_kms: [f64; 3],
+    pub latitude_deg: f64,
+    pub longitude_deg: f64,
+    pub altitude_km: f64,
+    pub keplerian_elements: KeplerianElements,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SatelliteDecayRiskResponse {
+    pub satellite_id: Uuid,
+    pub satellite_name: String,
+    pub perigee_altitude_km: f64,
+    pub apogee_altitude_km: f64,
+    pub bstar_drag: f64,
+    pub mean_motion_derivative_rev_day2: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orbital_lifetime_days_estimate: Option<f64>,
+    pub decay_status: String,
+    pub reentry_risk_score: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DecayWatchResponse {
+    pub scanned_satellites_count: usize,
+    pub decaying_satellites_found: usize,
+    pub threshold_perigee_km: f64,
+    pub threshold_bstar: f64,
+    pub objects: Vec<SatelliteDecayRiskResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CollisionProbabilityRequest {
+    pub miss_distance_km: f64,
+    pub relative_velocity_kms: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hard_body_radius_m: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub combined_position_uncertainty_m: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CollisionProbabilityResponse {
+    pub miss_distance_km: f64,
+    pub relative_velocity_kms: f64,
+    pub hard_body_radius_m: f64,
+    pub combined_uncertainty_m: f64,
+    pub collision_probability: f64,
+    pub risk_category: String,
+    pub recommendation: String,
 }
