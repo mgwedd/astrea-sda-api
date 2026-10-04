@@ -3,7 +3,7 @@ use crate::repository::SatelliteRepository;
 use std::time::Duration;
 use tracing::{error, info};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CelesTrakGroup {
     Stations,
     Visual,
@@ -14,6 +14,21 @@ pub enum CelesTrakGroup {
 }
 
 impl CelesTrakGroup {
+    pub const ALL: &'static [CelesTrakGroup] = &[
+        CelesTrakGroup::Stations,
+        CelesTrakGroup::Visual,
+        CelesTrakGroup::Starlink,
+        CelesTrakGroup::Weather,
+        CelesTrakGroup::Last30Days,
+        CelesTrakGroup::Active,
+    ];
+
+    pub const CURATED: &'static [CelesTrakGroup] = &[
+        CelesTrakGroup::Stations,
+        CelesTrakGroup::Visual,
+        CelesTrakGroup::Last30Days,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             CelesTrakGroup::Stations => "stations",
@@ -23,6 +38,80 @@ impl CelesTrakGroup {
             CelesTrakGroup::Last30Days => "last-30-days",
             CelesTrakGroup::Active => "active",
         }
+    }
+
+    pub fn all_names() -> Vec<&'static str> {
+        Self::ALL.iter().map(|g| g.as_str()).collect()
+    }
+
+    pub fn from_str_strict(s: &str) -> Option<CelesTrakGroup> {
+        match s.trim().to_lowercase().as_str() {
+            "stations" | "station" => Some(CelesTrakGroup::Stations),
+            "visual" | "brightest" => Some(CelesTrakGroup::Visual),
+            "starlink" => Some(CelesTrakGroup::Starlink),
+            "weather" => Some(CelesTrakGroup::Weather),
+            "last-30-days" | "last_30_days" | "last30days" | "recent" => {
+                Some(CelesTrakGroup::Last30Days)
+            }
+            "active" => Some(CelesTrakGroup::Active),
+            _ => None,
+        }
+    }
+
+    pub fn parse_groups(input: &str) -> Result<Vec<CelesTrakGroup>, String> {
+        let trimmed = input.trim();
+        if trimmed.is_empty()
+            || trimmed.eq_ignore_ascii_case("curated")
+            || trimmed.eq_ignore_ascii_case("default")
+        {
+            return Ok(Self::CURATED.to_vec());
+        }
+        if trimmed.eq_ignore_ascii_case("all") {
+            return Ok(Self::ALL.to_vec());
+        }
+
+        let mut groups = Vec::new();
+        let mut unknown = Vec::new();
+
+        for part in trimmed.split(',') {
+            let p = part.trim();
+            if p.is_empty() {
+                continue;
+            }
+            if p.eq_ignore_ascii_case("curated") || p.eq_ignore_ascii_case("default") {
+                for g in Self::CURATED {
+                    if !groups.contains(g) {
+                        groups.push(*g);
+                    }
+                }
+            } else if p.eq_ignore_ascii_case("all") {
+                for g in Self::ALL {
+                    if !groups.contains(g) {
+                        groups.push(*g);
+                    }
+                }
+            } else if let Some(g) = Self::from_str_strict(p) {
+                if !groups.contains(&g) {
+                    groups.push(g);
+                }
+            } else {
+                unknown.push(p.to_string());
+            }
+        }
+
+        if !unknown.is_empty() {
+            return Err(format!(
+                "Unknown satellite group(s): '{}'. Supported groups: {}, or 'curated', 'all'",
+                unknown.join(", "),
+                Self::all_names().join(", ")
+            ));
+        }
+
+        if groups.is_empty() {
+            return Ok(Self::CURATED.to_vec());
+        }
+
+        Ok(groups)
     }
 }
 
@@ -333,18 +422,29 @@ impl DiscoveryPipeline {
                 rt.block_on(async move {
                     let mut interval =
                         tokio::time::interval(Duration::from_secs(interval_hours * 3600));
-                    // First tick completes immediately
-                    interval.tick().await;
+                    let groups_env = std::env::var("DISCOVERY_SYNC_GROUPS")
+                        .unwrap_or_else(|_| "curated".to_string());
+                    let groups = CelesTrakGroup::parse_groups(&groups_env).unwrap_or_else(|e| {
+                        error!(
+                            "Invalid DISCOVERY_SYNC_GROUPS ('{}'): {}. Falling back to 'curated'",
+                            groups_env, e
+                        );
+                        CelesTrakGroup::CURATED.to_vec()
+                    });
+                    let group_names: Vec<&str> = groups.iter().map(|g| g.as_str()).collect();
+                    info!(
+                        "🚀 Configured background CelesTrak discovery pipeline for groups: [{}] (every {}h)",
+                        group_names.join(", "),
+                        interval_hours
+                    );
 
                     loop {
-                        info!("Starting scheduled CelesTrak discovery pipeline sync on dedicated worker thread...");
-                        let groups = [
-                            CelesTrakGroup::Stations,
-                            CelesTrakGroup::Visual,
-                            CelesTrakGroup::Last30Days,
-                        ];
+                        info!(
+                            "Starting scheduled CelesTrak discovery pipeline sync for groups: [{}] on dedicated worker thread...",
+                            group_names.join(", ")
+                        );
 
-                        for group in groups {
+                        for &group in &groups {
                             if let Err(e) = Self::sync_group(&repo, group).await {
                                 error!("Failed discovery sync for group {}: {}", group.as_str(), e);
                             }

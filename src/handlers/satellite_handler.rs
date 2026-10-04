@@ -58,15 +58,31 @@ pub struct GroundTrackQueryParams {
 
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct PipelineSyncQueryParams {
-    /// CelesTrak satellite group name (e.g. 'stations', 'visual', 'starlink', 'weather', 'active', 'last-30-days')
+    /// CelesTrak satellite group name to synchronize. Options: 'curated' (default: stations, visual, last-30-days), 'all', 'stations', 'visual', 'starlink', 'weather', 'last-30-days', 'active', or a comma-separated list (e.g. 'stations,visual').
     pub group: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineGroupSyncDetail {
+    /// Group identifier that was synchronized
+    pub group: String,
+    /// Number of satellites upserted for this specific group
+    pub synced_count: usize,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PipelineSyncResponse {
+    /// Requested group name or descriptive summary
     pub group: String,
+    /// Total number of satellites synchronized across all groups
     pub synced_count: usize,
+    /// Detailed per-group synchronization counts
+    pub groups: Vec<PipelineGroupSyncDetail>,
+    /// Available CelesTrak groups supported by the API
+    pub available_groups: Vec<String>,
+    /// Informative status summary message
     pub message: String,
 }
 
@@ -239,6 +255,7 @@ pub async fn delete_satellite(
     params(PipelineSyncQueryParams),
     responses(
         (status = 200, description = "Pipeline sync completed successfully", body = PipelineSyncResponse),
+        (status = 400, description = "Bad Request - Invalid or unknown satellite group", body = ErrorResponse),
         (status = 401, description = "Unauthorized - Missing or invalid JWT token", body = ErrorResponse),
         (status = 403, description = "Forbidden - Insufficient role permissions", body = ErrorResponse),
         (status = 500, description = "Pipeline sync execution failed", body = ErrorResponse)
@@ -254,28 +271,55 @@ pub async fn trigger_pipeline_sync(
     claims.require_role(UserRole::Admin)?;
     tracing::info!("Pipeline sync triggered by JWT user: {}", claims.sub);
 
-    let group = match params.group.as_deref() {
-        Some("visual") => CelesTrakGroup::Visual,
-        Some("starlink") => CelesTrakGroup::Starlink,
-        Some("weather") => CelesTrakGroup::Weather,
-        Some("last-30-days") => CelesTrakGroup::Last30Days,
-        Some("active") => CelesTrakGroup::Active,
-        _ => CelesTrakGroup::Stations,
+    let raw_input = params.group.as_deref().unwrap_or("curated");
+    let requested_groups = CelesTrakGroup::parse_groups(raw_input).map_err(AppError::BadRequest)?;
+
+    let mut group_details = Vec::with_capacity(requested_groups.len());
+    let mut total_synced = 0usize;
+
+    for group in requested_groups {
+        let count = DiscoveryPipeline::sync_group(&repo, group)
+            .await
+            .map_err(AppError::InternalServerError)?;
+        total_synced += count;
+        group_details.push(PipelineGroupSyncDetail {
+            group: group.as_str().to_string(),
+            synced_count: count,
+        });
+    }
+
+    let group_label = if raw_input.trim().is_empty() {
+        "curated".to_string()
+    } else {
+        raw_input.trim().to_string()
     };
 
-    let group_name = group.as_str().to_string();
+    let available_groups = CelesTrakGroup::all_names()
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect();
 
-    let synced_count = DiscoveryPipeline::sync_group(&repo, group)
-        .await
-        .map_err(AppError::InternalServerError)?;
+    let message = if group_details.len() == 1 {
+        format!(
+            "Successfully synced {} satellites for group '{}'",
+            total_synced, group_details[0].group
+        )
+    } else {
+        let names: Vec<&str> = group_details.iter().map(|g| g.group.as_str()).collect();
+        format!(
+            "Successfully synced {} satellites across {} groups ({})",
+            total_synced,
+            group_details.len(),
+            names.join(", ")
+        )
+    };
 
     Ok(Json(PipelineSyncResponse {
-        group: group_name.clone(),
-        synced_count,
-        message: format!(
-            "Successfully synced {} satellites for group '{}'",
-            synced_count, group_name
-        ),
+        group: group_label,
+        synced_count: total_synced,
+        groups: group_details,
+        available_groups,
+        message,
     }))
 }
 

@@ -268,7 +268,7 @@
           {
             "name": "group",
             "in": "query",
-            "description": "CelesTrak satellite group name (e.g. 'stations', 'visual', 'starlink', 'weather', 'active', 'last-30-days')",
+            "description": "CelesTrak satellite group name to synchronize. Options: 'curated' (default: stations, visual, last-30-days), 'all', 'stations', 'visual', 'starlink', 'weather', 'last-30-days', 'active', or a comma-separated list (e.g. 'stations,visual').",
             "required": false,
             "schema": {
               "type": "string",
@@ -283,6 +283,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PipelineSyncResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request - Invalid or unknown satellite group",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -2299,22 +2309,59 @@
           }
         }
       },
+      "PipelineGroupSyncDetail": {
+        "type": "object",
+        "required": [
+          "group",
+          "syncedCount"
+        ],
+        "properties": {
+          "group": {
+            "type": "string",
+            "description": "Group identifier that was synchronized"
+          },
+          "syncedCount": {
+            "type": "integer",
+            "description": "Number of satellites upserted for this specific group",
+            "minimum": 0
+          }
+        }
+      },
       "PipelineSyncResponse": {
         "type": "object",
         "required": [
           "group",
           "syncedCount",
+          "groups",
+          "availableGroups",
           "message"
         ],
         "properties": {
+          "availableGroups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Available CelesTrak groups supported by the API"
+          },
           "group": {
-            "type": "string"
+            "type": "string",
+            "description": "Requested group name or descriptive summary"
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PipelineGroupSyncDetail"
+            },
+            "description": "Detailed per-group synchronization counts"
           },
           "message": {
-            "type": "string"
+            "type": "string",
+            "description": "Informative status summary message"
           },
           "syncedCount": {
             "type": "integer",
+            "description": "Total number of satellites synchronized across all groups",
             "minimum": 0
           }
         }
