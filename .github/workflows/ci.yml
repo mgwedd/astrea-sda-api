@@ -6,6 +6,26 @@ on:
     tags: [ "v*" ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Release semver bump type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      custom_version:
+        description: 'Optional explicit version (e.g. 2.0.0). Overrides bump calculation.'
+        required: false
+        type: string
+      confirm_breaking:
+        description: 'REQUIRED for MAJOR releases: I confirm this is an intentional breaking change'
+        required: false
+        default: false
+        type: boolean
 
 env:
   CARGO_TERM_COLOR: always
@@ -130,19 +150,36 @@ jobs:
           release_branches: 'main'
           dry_run: true
 
-      - name: Guard Against Breaking Changes Gate
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      - name: Breaking Change & Scope Gate
+        id: breaking_guard
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
         run: |
+          # 1. Manual workflow_dispatch handling
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            DISPATCH_TYPE="${{ github.event.inputs.release_type }}"
+            CONFIRM_BREAKING="${{ github.event.inputs.confirm_breaking }}"
+            echo "Manual release dispatch triggered: type=$DISPATCH_TYPE, confirm_breaking=$CONFIRM_BREAKING"
+            
+            if [ "$DISPATCH_TYPE" = "major" ] && [ "$CONFIRM_BREAKING" != "true" ]; then
+              echo "::error title=Major Release Consent Required::Major version upgrade requires explicit consent! Check 'confirm_breaking' in workflow inputs to authorize breaking changes."
+              exit 1
+            fi
+            echo "skip_sdk_build=false" >> $GITHUB_OUTPUT
+            echo "release_type=$DISPATCH_TYPE" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # 2. Automated push to main handling
           RELEASE_TYPE="${{ steps.analyze_version.outputs.release_type }}"
           echo "Detected conventional commit release type: $RELEASE_TYPE"
           
-          # Check 1: Release type computed by conventional commit analyzer
+          # Check for breaking indicators in conventional commits
           if [ "$RELEASE_TYPE" = "major" ]; then
-            echo "::error title=Breaking Change Blocked::A breaking change (major bump) was detected in conventional commits on main! Automated SDK releases block breaking changes to protect client stability. Release aborted."
+            echo "::error title=Breaking Change Blocked::A breaking change (major bump) was detected in conventional commits on main! Automated SDK releases block breaking changes to protect client stability. To perform an intentional major version upgrade, use workflow_dispatch with explicit confirmation, or push an explicit tag."
             exit 1
           fi
 
-          # Check 2: Direct scan of commit messages since previous tag for breaking indicators
+          # Scan commit messages since previous tag for breaking indicators
           PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
           if [ -n "$PREV_TAG" ]; then
             COMMIT_LOG=$(git log ${PREV_TAG}..HEAD --format="%s%n%b")
@@ -155,9 +192,20 @@ jobs:
             exit 1
           fi
 
-          echo "Conventional commit verification passed: Release type is non-breaking ($RELEASE_TYPE)."
+          # 3. Check if changes are solely chore or docs (no SDK build needed for chore/docs)
+          SUBJECTS=$(if [ -n "$PREV_TAG" ]; then git log ${PREV_TAG}..HEAD --format="%s"; else git log -n 5 --format="%s"; fi)
+          NON_CHORE_DOCS=$(echo "$SUBJECTS" | grep -v -E '^(chore|docs)(\([^\)]+\))?:' | grep -v '^$' || true)
+          if [ -z "$NON_CHORE_DOCS" ] && [ -n "$SUBJECTS" ]; then
+            echo "Release consists solely of chore/docs commits ($RELEASE_TYPE). Version tag will be created, but Fern SDK compilation will be skipped."
+            echo "skip_sdk_build=true" >> $GITHUB_OUTPUT
+          else
+            echo "Release contains functional changes ($RELEASE_TYPE). Full Fern SDK build will execute."
+            echo "skip_sdk_build=false" >> $GITHUB_OUTPUT
+          fi
 
-      - name: Determine Version Bump & Create Tag
+          echo "release_type=$RELEASE_TYPE" >> $GITHUB_OUTPUT
+
+      - name: Determine Version Bump & Create Tag (Auto Push)
         id: bump_tag
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: mathieudutour/github-tag-action@v7
@@ -168,9 +216,40 @@ jobs:
           parse_squash_commits: true
           release_branches: 'main'
 
-      - name: Generate SDKs with Fern (Open-Source Local CLI)
+      - name: Create Tag for Manual Dispatch
+        id: dispatch_tag
+        if: github.event_name == 'workflow_dispatch'
         run: |
-          SDK_VERSION="${{ steps.bump_tag.outputs.new_version }}"
+          if [ -n "${{ github.event.inputs.custom_version }}" ]; then
+            RAW="${{ github.event.inputs.custom_version }}"
+            VERSION="${RAW#v}"
+            TAG="v${VERSION}"
+          else
+            PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.1.0")
+            PREV_VERSION="${PREV_TAG#v}"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$PREV_VERSION"
+            case "${{ github.event.inputs.release_type }}" in
+              major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+              minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+              patch) PATCH=$((PATCH + 1)) ;;
+            esac
+            VERSION="${MAJOR}.${MINOR}.${PATCH}"
+            TAG="v${VERSION}"
+          fi
+
+          echo "Creating and pushing tag $TAG for manual dispatch release..."
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG (Manual Dispatch: ${{ github.event.inputs.release_type }})"
+          git push origin "$TAG"
+
+          echo "new_tag=$TAG" >> $GITHUB_OUTPUT
+          echo "new_version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Generate SDKs with Fern (Open-Source Local CLI)
+        if: steps.breaking_guard.outputs.skip_sdk_build != 'true'
+        run: |
+          SDK_VERSION="${{ steps.bump_tag.outputs.new_version || steps.dispatch_tag.outputs.new_version }}"
           if [ -z "$SDK_VERSION" ] && [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             SDK_VERSION="${GITHUB_REF_NAME#v}"
           fi
@@ -183,6 +262,7 @@ jobs:
           fi
 
       - name: Package SDK Archives
+        if: steps.breaking_guard.outputs.skip_sdk_build != 'true'
         run: |
           mkdir -p dist
           tar -czvf dist/astrea-sda-api-sdk-typescript.tar.gz -C sdks/typescript .
@@ -191,20 +271,15 @@ jobs:
           tar -czvf dist/astrea-sda-api-sdk-java.tar.gz -C sdks/java .
           tar -czvf dist/astrea-sda-api-sdk-rust.tar.gz -C sdks/rust .
 
-      - name: Release SDK Archives to GitHub Releases
-        if: (github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bump_tag.outputs.new_tag != '') || startsWith(github.ref, 'refs/tags/v')
+      - name: Release to GitHub Releases
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bump_tag.outputs.new_tag != '') || (github.event_name == 'workflow_dispatch' && steps.dispatch_tag.outputs.new_tag != '') || startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.bump_tag.outputs.new_tag || github.ref_name }}
-          name: ${{ steps.bump_tag.outputs.new_tag || github.ref_name }}
+          tag_name: ${{ steps.bump_tag.outputs.new_tag || steps.dispatch_tag.outputs.new_tag || github.ref_name }}
+          name: ${{ steps.bump_tag.outputs.new_tag || steps.dispatch_tag.outputs.new_tag || github.ref_name }}
           body: ${{ steps.bump_tag.outputs.changelog }}
-          files: |
-            dist/astrea-sda-api-sdk-typescript.tar.gz
-            dist/astrea-sda-api-sdk-python.tar.gz
-            dist/astrea-sda-api-sdk-go.tar.gz
-            dist/astrea-sda-api-sdk-java.tar.gz
-            dist/astrea-sda-api-sdk-rust.tar.gz
-          generate_release_notes: ${{ steps.bump_tag.outputs.changelog == '' }}
+          files: ${{ steps.breaking_guard.outputs.skip_sdk_build != 'true' && 'dist/astrea-sda-api-sdk-*.tar.gz' || '' }}
+          generate_release_notes: true
 
   deploy-railway:
     name: Deploy to Railway (Production)
@@ -214,7 +289,7 @@ jobs:
       - docker-build-check
       - openapi-breaking-change-check
       - fern-sdk-build-and-release
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -245,7 +320,7 @@ jobs:
     needs:
       - test-and-build
       - openapi-breaking-change-check
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     permissions:
       pages: write
       id-token: write
