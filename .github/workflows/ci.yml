@@ -32,6 +32,9 @@ jobs:
       - name: Run Clippy Linter
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      - name: Generate Local Dev RSA Keys
+        run: ./scripts/setup-keys.sh
+
       - name: Run Test Suite
         run: cargo test --all-targets --all-features
 

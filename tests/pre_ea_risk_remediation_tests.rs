@@ -15,12 +15,21 @@ use std::process::Command;
 use tower::ServiceExt;
 use uuid::Uuid;
 
+static INIT_KEYS: std::sync::Once = std::sync::Once::new();
+
+fn ensure_keys_exist() {
+    INIT_KEYS.call_once(|| {
+        let _ = Command::new("./scripts/setup-keys.sh").output();
+    });
+}
+
 // ==============================================================================
 // 1. Strict Defense-in-Depth Authentication & RBAC Enforcement Tests
 // ==============================================================================
 
 #[tokio::test]
 async fn test_ea_risk_defense_in_depth_unauthenticated_access_is_blocked() {
+    ensure_keys_exist();
     let repo = SatelliteRepository::new(None).await;
     let app = create_router(repo);
 
@@ -139,6 +148,7 @@ async fn test_ea_risk_defense_in_depth_public_endpoints_remain_accessible() {
 
 #[tokio::test]
 async fn test_ea_risk_defense_in_depth_rbac_privilege_boundaries() {
+    ensure_keys_exist();
     let repo = SatelliteRepository::new(None).await;
     let app = create_router(repo);
 
@@ -296,6 +306,7 @@ fn test_ea_risk_postgres_multi_statement_query_isolation_logic() {
 
 #[tokio::test]
 async fn test_ea_risk_m2m_pk_jwtca_assertion_deserialization_without_role() {
+    ensure_keys_exist();
     let repo = SatelliteRepository::new(None).await;
     let app = create_router(repo);
 
@@ -370,6 +381,7 @@ async fn test_ea_risk_m2m_pk_jwtca_assertion_deserialization_without_role() {
 
 #[test]
 fn test_ea_risk_make_jwt_stdout_sanitation_clean_token_capture() {
+    ensure_keys_exist();
     // Verifies that scripts/make-jwt.sh can be invoked via $(./scripts/make-jwt.sh -q) without banner leakage
     let output = Command::new("./scripts/make-jwt.sh")
         .args(["-q", "sanitized_user", "editor", "3600"])
@@ -423,6 +435,7 @@ fn test_ea_risk_tle_checksum_integrity_algorithm() {
 
 #[tokio::test]
 async fn test_ea_risk_exact_http_status_codes_not_found_and_sgp4() {
+    ensure_keys_exist();
     let repo = SatelliteRepository::new(None).await;
     let app = create_router(repo);
 
