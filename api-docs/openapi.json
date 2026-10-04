@@ -2370,10 +2370,6 @@
         "required": [
           "group",
           "syncedCount",
-          "groups",
-          "availableGroups",
-          "maxAgeHours",
-          "force",
           "message"
         ],
         "properties": {
@@ -2382,11 +2378,13 @@
             "items": {
               "type": "string"
             },
-            "description": "Available CelesTrak groups supported by the API"
+            "description": "Available CelesTrak groups supported by the API",
+            "nullable": true
           },
           "force": {
             "type": "boolean",
-            "description": "Whether force mode was enabled to bypass freshness checks"
+            "description": "Whether force mode was enabled to bypass freshness checks",
+            "nullable": true
           },
           "group": {
             "type": "string",
@@ -2397,12 +2395,14 @@
             "items": {
               "$ref": "#/components/schemas/PipelineGroupSyncDetail"
             },
-            "description": "Detailed per-group synchronization counts and freshness status"
+            "description": "Detailed per-group synchronization counts and freshness status",
+            "nullable": true
           },
           "maxAgeHours": {
             "type": "number",
             "format": "double",
-            "description": "Maximum age limit applied in hours"
+            "description": "Maximum age limit applied in hours",
+            "nullable": true
           },
           "message": {
             "type": "string",

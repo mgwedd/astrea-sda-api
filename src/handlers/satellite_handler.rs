@@ -88,16 +88,16 @@ pub struct PipelineSyncResponse {
     pub group: String,
     /// Total number of satellites newly updated across all groups
     pub synced_count: usize,
-    /// Detailed per-group synchronization counts and freshness status
-    pub groups: Vec<PipelineGroupSyncDetail>,
-    /// Available CelesTrak groups supported by the API
-    pub available_groups: Vec<String>,
-    /// Maximum age limit applied in hours
-    pub max_age_hours: f64,
-    /// Whether force mode was enabled to bypass freshness checks
-    pub force: bool,
     /// Informative status summary message
     pub message: String,
+    /// Detailed per-group synchronization counts and freshness status
+    pub groups: Option<Vec<PipelineGroupSyncDetail>>,
+    /// Available CelesTrak groups supported by the API
+    pub available_groups: Option<Vec<String>>,
+    /// Maximum age limit applied in hours
+    pub max_age_hours: Option<f64>,
+    /// Whether force mode was enabled to bypass freshness checks
+    pub force: Option<bool>,
 }
 
 fn map_calculation_error(e: String) -> AppError {
@@ -361,11 +361,11 @@ pub async fn trigger_pipeline_sync(
     Ok(Json(PipelineSyncResponse {
         group: group_label,
         synced_count: total_synced,
-        groups: group_details,
-        available_groups,
-        max_age_hours,
-        force,
         message,
+        groups: Some(group_details),
+        available_groups: Some(available_groups),
+        max_age_hours: Some(max_age_hours),
+        force: Some(force),
     }))
 }
 
