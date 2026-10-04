@@ -293,21 +293,7 @@ jobs:
           fi
 
           echo "Updating CHANGELOG.md for $TAG ($RELEASE_DATE)..."
-          
-          python3 -c "
-import os
-tag = '''$TAG'''
-date = '''$RELEASE_DATE'''
-body = '''$CHANGELOG_BODY'''.strip()
-content = open('CHANGELOG.md').read() if os.path.exists('CHANGELOG.md') else '# Changelog\n\n## [Unreleased]\n'
-entry = f'## [{tag}] - {date}\n\n{body}\n\n'
-if '## [Unreleased]' in content:
-    idx = content.find('## [Unreleased]') + len('## [Unreleased]')
-    new_content = content[:idx] + '\n\n' + entry + content[idx:].lstrip()
-else:
-    new_content = '# Changelog\n\n' + entry + content
-open('CHANGELOG.md', 'w').write(new_content)
-"
+          ./scripts/update-changelog.py "$TAG" "$RELEASE_DATE" "$CHANGELOG_BODY"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
