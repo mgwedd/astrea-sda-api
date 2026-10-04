@@ -791,4 +791,18 @@ echo "=========================================================="
 - [x] PR reviewed and merged to `main`.
 
 ---
+
+## 9. Early Access (EA) Risk Remediation & Hardening Audit Matrix
+
+Prior to Early Access (EA) release candidate packaging, five critical security, resilience, and operational risks were identified, audited, and resolved. Automated tests verifying each remediation reside in [`tests/pre_ea_risk_remediation_tests.rs`](file:///Users/wedd/dev/astrea-sda-api/tests/pre_ea_risk_remediation_tests.rs).
+
+| Risk ID | Risk Domain | Description & Root Cause | Remediation & Guard | Automated Test Verification |
+|---|---|---|---|---|
+| **EA-RISK-01** | **Defense-in-Depth Auth** | Endpoints were partially exposed without authentication. All operational satellite and astrodynamics endpoints required zero-trust verification. | Enforced strict Bearer JWT auth across all 18 operational routes. Implemented RBAC boundaries: `viewer` for queries, `editor` for writes, and `admin` for deletions and pipeline triggers (`POST /v1/pipelines/sync`). Public routes strictly confined to `/`, `/docs`, `/swagger-ui/`, and `/api-docs/openapi.json`. | `test_ea_risk_defense_in_depth_unauthenticated_access_is_blocked`<br>`test_ea_risk_defense_in_depth_public_endpoints_remain_accessible`<br>`test_ea_risk_defense_in_depth_rbac_privilege_boundaries` |
+| **EA-RISK-02** | **PostgreSQL Persistence** | Multi-statement schema migrations executed in a single query caused prepared statement protocol errors on PostgreSQL startup. | Migrations in `PostgresDataProvider::connect` are executed as isolated, single DDL statements (`CREATE TABLE IF NOT EXISTS`). | `test_ea_risk_postgres_multi_statement_query_isolation_logic` |
+| **EA-RISK-03** | **M2M JWTCA Token Exchange** | RFC 7523 M2M client assertions do not provide a `role` claim, causing deserialization failure into `Claims`. | Added `#[serde(default)]` to `role` in `Claims`. Client assertions deserialize cleanly with an empty string and exchange to `editor` tokens for autonomous M2M workflows. | `test_ea_risk_m2m_pk_jwtca_assertion_deserialization_without_role` |
+| **EA-RISK-04** | **Tooling & Script Sanitation** | Banner and ASCII log messages on stdout during `scripts/make-jwt.sh` execution corrupted subshell token capture (`$(./scripts/make-jwt.sh)`). Off-by-one modulo checksums existed in test fixtures. | Added `-q` quiet flag and redirected non-token messages to stderr. Standardized NORAD TLE modulo 10 checksum verification across test fixtures. | `test_ea_risk_make_jwt_stdout_sanitation_clean_token_capture`<br>`test_ea_risk_tle_checksum_integrity_algorithm` |
+| **EA-RISK-05** | **HTTP Error Status Mapping** | SGP4 parsing errors returned ambiguous 500 status codes; missing resources returned generic errors instead of clean REST status codes. | Explicitly mapped SGP4 calculation and decay errors to `422 Unprocessable Entity` and missing satellite/pass lookups to `404 Not Found`. | `test_ea_risk_exact_http_status_codes_not_found_and_sgp4` |
+
+---
 *Live long and prosper! 🖖*

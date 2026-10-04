@@ -231,7 +231,7 @@ pub async fn delete_satellite(
 
 /// Trigger CelesTrak Pipeline Sync
 ///
-/// Triggers automated CelesTrak discovery pipeline synchronization for a specific satellite group. Protected by JWT auth (requires 'editor' or 'admin' role).
+/// Triggers automated CelesTrak discovery pipeline synchronization for a specific satellite group. Protected by JWT auth (requires 'admin' role).
 #[utoipa::path(
     post,
     path = "/v1/pipelines/sync",
@@ -251,7 +251,7 @@ pub async fn trigger_pipeline_sync(
     State(repo): State<SatelliteRepository>,
     Query(params): Query<PipelineSyncQueryParams>,
 ) -> Result<Json<PipelineSyncResponse>, AppError> {
-    claims.require_role(UserRole::Editor)?;
+    claims.require_role(UserRole::Admin)?;
     tracing::info!("Pipeline sync triggered by JWT user: {}", claims.sub);
 
     let group = match params.group.as_deref() {
