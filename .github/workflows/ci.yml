@@ -281,6 +281,39 @@ jobs:
           files: ${{ steps.breaking_guard.outputs.skip_sdk_build != 'true' && 'dist/astrea-sda-api-sdk-*.tar.gz' || '' }}
           generate_release_notes: true
 
+      - name: Update CHANGELOG.md & Commit
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bump_tag.outputs.new_tag != '') || (github.event_name == 'workflow_dispatch' && steps.dispatch_tag.outputs.new_tag != '')
+        run: |
+          TAG="${{ steps.bump_tag.outputs.new_tag || steps.dispatch_tag.outputs.new_tag }}"
+          CHANGELOG_BODY="${{ steps.bump_tag.outputs.changelog }}"
+          RELEASE_DATE=$(date -u +"%Y-%m-%d")
+
+          if [ -z "$CHANGELOG_BODY" ]; then
+            CHANGELOG_BODY=$(git log -n 5 --format="* %s (%h)")
+          fi
+
+          echo "Updating CHANGELOG.md for $TAG ($RELEASE_DATE)..."
+          
+          python3 -c "
+import os
+tag = '''$TAG'''
+date = '''$RELEASE_DATE'''
+body = '''$CHANGELOG_BODY'''.strip()
+content = open('CHANGELOG.md').read() if os.path.exists('CHANGELOG.md') else '# Changelog\n\n## [Unreleased]\n'
+entry = f'## [{tag}] - {date}\n\n{body}\n\n'
+if '## [Unreleased]' in content:
+    idx = content.find('## [Unreleased]') + len('## [Unreleased]')
+    new_content = content[:idx] + '\n\n' + entry + content[idx:].lstrip()
+else:
+    new_content = '# Changelog\n\n' + entry + content
+open('CHANGELOG.md', 'w').write(new_content)
+"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git diff --staged --quiet || (git commit -m "chore(release): update CHANGELOG.md for $TAG [skip ci]" && git push origin HEAD:main)
+
   deploy-railway:
     name: Deploy to Railway (Production)
     runs-on: ubuntu-latest

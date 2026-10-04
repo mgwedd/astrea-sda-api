@@ -35,6 +35,7 @@ Continuous Delivery is fully automated for backward-compatible changes:
    - If commits are `fix:`, `perf:` $\rightarrow$ Patch bump (`v0.1.1`). Full SDK build runs.
    - If commits are solely `chore:` or `docs:` $\rightarrow$ Patch bump (`v0.1.2`). Git tag is created; **SDK generation is skipped** to save compute and eliminate no-op artifact noise.
    - Tarballs are packaged into `dist/` and published to GitHub Releases.
+   - **Root `CHANGELOG.md`**: Automatically prepends the new release section with the date and change items, committing back to `main` with `[skip ci]`.
    - Production Docker container is automatically deployed to Railway.
    - OpenAPI specifications and Swagger/Redoc bundles are deployed to GitHub Pages.
 
