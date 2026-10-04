@@ -6,5 +6,5 @@ cd "$DIR"
 
 git config core.hooksPath .githooks
 
-chmod +x .githooks/pre-commit .githooks/pre-push 2>/dev/null || true
-chmod +x .cargo-husky/hooks/pre-commit .cargo-husky/hooks/pre-push 2>/dev/null || true
+chmod +x .githooks/pre-commit .githooks/pre-push .githooks/commit-msg 2>/dev/null || true
+chmod +x .cargo-husky/hooks/pre-commit .cargo-husky/hooks/pre-push .cargo-husky/hooks/commit-msg 2>/dev/null || true

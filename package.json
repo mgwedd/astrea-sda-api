@@ -1,0 +1,13 @@
+{
+  "name": "astrea-sda-api",
+  "version": "0.1.1",
+  "private": true,
+  "description": "High-performance Rust Space Domain Awareness (SDA) & SGP4 Astrodynamics API",
+  "scripts": {
+    "commitlint": "commitlint --edit"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^19.8.0",
+    "@commitlint/config-conventional": "^19.8.0"
+  }
+}

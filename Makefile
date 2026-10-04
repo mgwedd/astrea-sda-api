@@ -64,6 +64,10 @@ install-dev: keys hooks install ## Full developer onboarding (keys, hooks, cargo
 		echo "📦 Installing fern-api CLI for SDK generation..."; \
 		npm install -g fern-api || true; \
 	fi
+	@if command -v npm &> /dev/null; then \
+		echo "📦 Installing commitlint dependencies..."; \
+		npm install --silent; \
+	fi
 	@echo "=========================================================="
 	@echo "✅ Developer environment fully initialized!"
 	@echo "=========================================================="
@@ -71,7 +75,7 @@ install-dev: keys hooks install ## Full developer onboarding (keys, hooks, cargo
 keys: ## Auto-generate local RSA 2048 keypair in .keys/ (TLS managed by Caddy)
 	@./scripts/setup-keys.sh
 
-hooks: ## Install Rust git pre-commit quality hooks via cargo-husky
+hooks: ## Install Git quality hooks (pre-commit fmt/lint & commit-msg commitlint)
 	@./scripts/setup-hooks.sh
 
 ##@ Code Quality & Testing

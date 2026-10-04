@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -e
+
+# Astrea SDA API - Git Commit Message Linting Hook (Conventional Commits)
+# Powered by commitlint (https://commitlint.js.org/)
+
+MSG_FILE="$1"
+
+if [ -z "$MSG_FILE" ] || [ ! -f "$MSG_FILE" ]; then
+    echo "❌ Error: commit-msg hook called without a valid commit message file." >&2
+    exit 1
+fi
+
+# Prefer locally installed commitlint in node_modules/.bin, fall back to npx
+if [ -x "./node_modules/.bin/commitlint" ]; then
+    ./node_modules/.bin/commitlint --edit "$MSG_FILE"
+elif command -v npx &> /dev/null; then
+    npx --no-install commitlint --edit "$MSG_FILE" 2>/dev/null || npx commitlint --edit "$MSG_FILE"
+else
+    echo "⚠️ Warning: commitlint not found. Install via 'npm install' or ensure npx is on PATH." >&2
+fi
