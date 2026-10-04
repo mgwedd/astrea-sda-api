@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **CelesTrak Anti-Spam & Timestamp Freshness Gating**: Implemented `max_age_hours` (configurable limit e.g. 6h, 12h, 7 days) and `force` flags on `POST /v1/pipelines/sync` with persistent sync timestamp tracking in Postgres (`pipeline_sync_history`), in-memory data provider, and Redis/TieredCache. Outbound CelesTrak requests are automatically skipped if local data was synced within the freshness window, protecting upstream CelesTrak infrastructure from rate-limiting and redundant polling.
 - **Intuitive Pipeline Sync Defaults & Multi-Group Support**: Enhanced `POST /v1/pipelines/sync` to default to `curated` (syncing `stations`, `visual`, and `last-30-days`), support `all` or comma-separated groups (`?group=stations,visual`), return per-group sync breakdowns with available group listings, and dynamically configure background ingestion via `DISCOVERY_SYNC_GROUPS`.
 - **Strict Pipeline Group Validation**: Added 400 Bad Request error handling with helpful error messaging when unsupported or misspelled group names are provided (preventing silent fallback to space stations).
 - **Manual Release Dispatch (`workflow_dispatch`)**: Added manual release workflow in GitHub Actions with mandatory explicit consent checkbox for Major breaking releases.

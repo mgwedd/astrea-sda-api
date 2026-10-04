@@ -128,4 +128,32 @@ impl TieredCache {
             });
         }
     }
+
+    /// Fetches a raw String directly from L1 (Memory) or L2 (Redis) without serialization
+    pub async fn get_raw(&self, key: &str) -> Option<String> {
+        if let Some(val) = self.l1_cache.get(key).await {
+            return Some(val);
+        }
+        if let Some(mut redis_conn) = self.l2_redis.clone() {
+            let redis_res: Result<Option<String>, redis::RedisError> = redis_conn.get(key).await;
+            if let Ok(Some(val)) = redis_res {
+                self.l1_cache.insert(key.to_string(), val.clone()).await;
+                return Some(val);
+            }
+        }
+        None
+    }
+
+    /// Sets a raw String in L1 (Memory) and L2 (Redis) with custom TTL
+    pub async fn set_raw(&self, key: &str, value: String, ttl: Duration) {
+        self.l1_cache.insert(key.to_string(), value.clone()).await;
+        if let Some(mut redis_conn) = self.l2_redis.clone() {
+            let key_str = key.to_string();
+            let ttl_secs = ttl.as_secs();
+            tokio::spawn(async move {
+                let _: Result<(), redis::RedisError> =
+                    redis_conn.set_ex(key_str, value, ttl_secs).await;
+            });
+        }
+    }
 }

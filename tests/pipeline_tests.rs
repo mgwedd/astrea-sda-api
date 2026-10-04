@@ -238,3 +238,65 @@ async fn test_pipeline_sync_endpoint_validation_and_auth() {
         .unwrap()
         .contains("Unknown satellite group(s): 'sterlink'"));
 }
+
+#[tokio::test]
+async fn test_pipeline_sync_freshness_anti_spam_and_force() {
+    use astrea_sda_api::{create_router, repository::SatelliteRepository};
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    let repo = SatelliteRepository::new(None).await;
+
+    // Simulate that group 'stations' was synced previously
+    repo.record_pipeline_sync("stations", 20).await.unwrap();
+
+    let app = create_router(repo);
+
+    // 1. Admin login
+    let login_payload = json!({
+        "email": "admin@astrea.local",
+        "password": "password123"
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/auth/login")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&login_payload).unwrap()))
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let auth_val: Value = serde_json::from_slice(&bytes).unwrap();
+    let admin_token = auth_val["token"].as_str().unwrap();
+
+    // 2. Query sync with max_age_hours=12.0 -> Should skip CelesTrak call because 1h < 12h
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/pipelines/sync?group=stations&max_age_hours=12")
+        .header("authorization", format!("Bearer {}", admin_token))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let res_json: Value = serde_json::from_slice(&bytes).unwrap();
+
+    assert_eq!(res_json["syncedCount"], 0);
+    assert_eq!(res_json["maxAgeHours"], 12.0);
+    assert_eq!(res_json["force"], false);
+    assert_eq!(res_json["groups"][0]["status"], "fresh");
+    assert_eq!(res_json["groups"][0]["syncedCount"], 0);
+    assert!(res_json["message"].as_str().unwrap().contains("up-to-date"));
+    assert!(res_json["message"]
+        .as_str()
+        .unwrap()
+        .contains("skipped to prevent spam"));
+}

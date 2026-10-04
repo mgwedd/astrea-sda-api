@@ -60,6 +60,10 @@ pub struct GroundTrackQueryParams {
 pub struct PipelineSyncQueryParams {
     /// CelesTrak satellite group name to synchronize. Options: 'curated' (default: stations, visual, last-30-days), 'all', 'stations', 'visual', 'starlink', 'weather', 'last-30-days', 'active', or a comma-separated list (e.g. 'stations,visual').
     pub group: Option<String>,
+    /// Maximum allowed data age in hours before triggering a CelesTrak query (default: 12.0 hours). If existing data was synced within this period, CelesTrak requests are skipped to prevent spamming.
+    pub max_age_hours: Option<f64>,
+    /// Force an immediate fetch from CelesTrak, bypassing freshness checks.
+    pub force: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -67,8 +71,14 @@ pub struct PipelineSyncQueryParams {
 pub struct PipelineGroupSyncDetail {
     /// Group identifier that was synchronized
     pub group: String,
-    /// Number of satellites upserted for this specific group
+    /// Number of satellites upserted for this specific group (0 if skipped because data was already fresh)
     pub synced_count: usize,
+    /// Freshness status: 'synced' (fetched from CelesTrak) or 'fresh' (skipped because records are within maxAgeHours)
+    pub status: String,
+    /// UTC timestamp when this group was last synchronized from CelesTrak
+    pub last_synced_at: Option<DateTime<Utc>>,
+    /// Current age of the data in hours at query time
+    pub age_hours: Option<f64>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -76,12 +86,16 @@ pub struct PipelineGroupSyncDetail {
 pub struct PipelineSyncResponse {
     /// Requested group name or descriptive summary
     pub group: String,
-    /// Total number of satellites synchronized across all groups
+    /// Total number of satellites newly updated across all groups
     pub synced_count: usize,
-    /// Detailed per-group synchronization counts
+    /// Detailed per-group synchronization counts and freshness status
     pub groups: Vec<PipelineGroupSyncDetail>,
     /// Available CelesTrak groups supported by the API
     pub available_groups: Vec<String>,
+    /// Maximum age limit applied in hours
+    pub max_age_hours: f64,
+    /// Whether force mode was enabled to bypass freshness checks
+    pub force: bool,
     /// Informative status summary message
     pub message: String,
 }
@@ -274,17 +288,37 @@ pub async fn trigger_pipeline_sync(
     let raw_input = params.group.as_deref().unwrap_or("curated");
     let requested_groups = CelesTrakGroup::parse_groups(raw_input).map_err(AppError::BadRequest)?;
 
+    let force = params.force.unwrap_or(false);
+    let max_age_hours: f64 = params.max_age_hours.unwrap_or_else(|| {
+        std::env::var("PIPELINE_MAX_AGE_HOURS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(12.0)
+    });
+
     let mut group_details = Vec::with_capacity(requested_groups.len());
     let mut total_synced = 0usize;
+    let mut freshly_synced_count = 0usize;
+    let mut skipped_fresh_count = 0usize;
 
     for group in requested_groups {
-        let count = DiscoveryPipeline::sync_group(&repo, group)
+        let res = DiscoveryPipeline::sync_group_with_freshness(&repo, group, max_age_hours, force)
             .await
             .map_err(AppError::InternalServerError)?;
-        total_synced += count;
+
+        total_synced += res.synced_count;
+        if res.status == "synced" {
+            freshly_synced_count += 1;
+        } else {
+            skipped_fresh_count += 1;
+        }
+
         group_details.push(PipelineGroupSyncDetail {
-            group: group.as_str().to_string(),
-            synced_count: count,
+            group: res.group,
+            synced_count: res.synced_count,
+            status: res.status,
+            last_synced_at: res.last_synced_at,
+            age_hours: res.age_hours,
         });
     }
 
@@ -299,10 +333,20 @@ pub async fn trigger_pipeline_sync(
         .map(|s| s.to_string())
         .collect();
 
-    let message = if group_details.len() == 1 {
+    let message = if skipped_fresh_count > 0 && freshly_synced_count == 0 {
         format!(
-            "Successfully synced {} satellites for group '{}'",
-            total_synced, group_details[0].group
+            "All requested groups ({}) are up-to-date (within {:.1}h max age limit). CelesTrak requests were skipped to prevent spam. Pass ?force=true to override.",
+            group_label, max_age_hours
+        )
+    } else if skipped_fresh_count > 0 {
+        format!(
+            "Synced {} satellites across {} groups; {} groups were already fresh within {:.1}h limit.",
+            total_synced, freshly_synced_count, skipped_fresh_count, max_age_hours
+        )
+    } else if group_details.len() == 1 {
+        format!(
+            "Successfully synced {} satellites for group '{}' (max age: {:.1}h)",
+            total_synced, group_details[0].group, max_age_hours
         )
     } else {
         let names: Vec<&str> = group_details.iter().map(|g| g.group.as_str()).collect();
@@ -319,6 +363,8 @@ pub async fn trigger_pipeline_sync(
         synced_count: total_synced,
         groups: group_details,
         available_groups,
+        max_age_hours,
+        force,
         message,
     }))
 }
