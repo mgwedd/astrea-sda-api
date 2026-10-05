@@ -8,9 +8,10 @@ Nothing here shares code with the Rust implementation:
     equation is solved by bisection.
   * Frames: astropy/ERFA (GMST 1982, WGS-84 gd2gc/gc2gd, east/north/up basis) with UT1-UTC
     forced to 0 and polar motion off, which is what the API documents (spec 12.7).
-Run: python3 tests/reference/gen_transform_reference.py   (needs numpy, astropy)
+Regenerate: python3 tests/reference/gen_transform_reference.py > tests/reference/transform_reference.json
+Staleness check (CI): python3 tests/reference/gen_transform_reference.py --check   (needs numpy, astropy)
 """
-import json, math
+import json, math, os, sys
 import numpy as np
 import erfa
 from astropy.time import Time
@@ -175,4 +176,24 @@ for epoch, pos, vel in CASES:
                               observer=OBS, az=float(az), el=float(el), range_km=float(rng),
                               sez=sez, ned=ned))
 
-print(json.dumps(out, indent=1))  # redirect into tests/reference/transform_reference.json
+
+def close(a, b, tol=1e-9):
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(close(a[k], b[k], tol) for k in a)
+    if isinstance(a, list):
+        return len(a) == len(b) and all(close(x, y, tol) for x, y in zip(a, b))
+    if isinstance(a, (int, float)) and not isinstance(a, bool):
+        return abs(a - b) <= tol * max(1.0, abs(a))
+    return a == b
+
+
+if "--check" in sys.argv:
+    # CI: fail if the committed JSON no longer matches what this script produces.
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "transform_reference.json")
+    committed = json.load(open(path))
+    if not close(json.loads(json.dumps(out)), committed):
+        sys.exit("tests/reference/transform_reference.json is stale: regenerate with "
+                 "python3 tests/reference/gen_transform_reference.py > tests/reference/transform_reference.json")
+    print("transform_reference.json is up to date")
+else:
+    print(json.dumps(out, indent=1))

@@ -58,6 +58,11 @@ jobs:
       - name: Run Test Suite
         run: cargo test --all-targets --all-features
 
+      - name: Check transform reference data is not stale
+        run: |
+          python3 -m pip install --quiet numpy astropy
+          python3 tests/reference/gen_transform_reference.py --check
+
       - name: Build Release Binary
         run: cargo build --release
 
