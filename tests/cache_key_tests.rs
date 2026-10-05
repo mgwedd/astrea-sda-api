@@ -107,10 +107,7 @@ async fn time_keyed_endpoints_do_not_bucket_time() {
     let (la, lo) = ground_point(&app, &tok, &iss).await;
     let loc = format!("lat={la}&lon={lo}");
     for (path, q) in [
-        (
-            "/v1/satellites/overhead".to_string(),
-            format!("{loc}&time="),
-        ),
+        ("/v1/overhead".to_string(), format!("{loc}&time=")),
         (
             format!("/v1/satellites/{iss}/illumination"),
             format!("{loc}&time="),
@@ -155,7 +152,7 @@ async fn coordinates_are_not_rounded_in_keys() {
     let (la, lo) = ground_point(&app, &tok, &iss).await;
     for (path, q) in [
         (
-            "/v1/satellites/overhead".to_string(),
+            "/v1/overhead".to_string(),
             format!("lon={lo}&time={T1}&lat="),
         ),
         (

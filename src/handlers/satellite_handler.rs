@@ -421,7 +421,7 @@ pub async fn trigger_pipeline_sync(
 /// Computes the satellite closest to overhead (highest elevation) across all tracked satellites using parallel Rayon propagation. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).
 #[utoipa::path(
     get,
-    path = "/v1/satellites/overhead",
+    path = "/v1/overhead",
     operation_id = "getOverheadSatellite",
     params(OverheadQueryParams),
     responses(
@@ -1240,7 +1240,7 @@ pub async fn get_satellite_decay_risk(
 /// Scans the satellite catalog for debris and satellites experiencing severe atmospheric drag or nearing uncontrolled atmospheric re-entry. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).
 #[utoipa::path(
     get,
-    path = "/v1/satellites/decay-watch",
+    path = "/v1/decay-watch",
     operation_id = "getDecayWatch",
     params(DecayWatchQueryParams),
     responses(

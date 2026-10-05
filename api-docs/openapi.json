@@ -313,6 +313,168 @@
         ]
       }
     },
+    "/v1/decay-watch": {
+      "get": {
+        "tags": [
+          "Astrodynamics"
+        ],
+        "summary": "Atmospheric Drag & Orbital Decay Re-Entry Watch",
+        "description": "Scans the satellite catalog for debris and satellites experiencing severe atmospheric drag or nearing uncontrolled atmospheric re-entry. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).",
+        "operationId": "getDecayWatch",
+        "parameters": [
+          {
+            "name": "max_perigee_km",
+            "in": "query",
+            "description": "Maximum perigee altitude threshold in km to flag re-entry hazard (default: 300.0 km)",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "format": "double",
+              "nullable": true
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of decaying objects to return (default: 50, max: 500)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "nullable": true,
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Decay watch scan completed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecayWatchResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Missing or invalid JWT token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal calculation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/v1/overhead": {
+      "get": {
+        "tags": [
+          "Satellites"
+        ],
+        "summary": "Get Overhead Satellite",
+        "description": "Computes the satellite closest to overhead (highest elevation) across all tracked satellites using parallel Rayon propagation. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).",
+        "operationId": "getOverheadSatellite",
+        "parameters": [
+          {
+            "name": "lat",
+            "in": "query",
+            "description": "Observer latitude in decimal degrees (-90.0 to 90.0)",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          {
+            "name": "lon",
+            "in": "query",
+            "description": "Observer longitude in decimal degrees (-180.0 to 180.0)",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          {
+            "name": "alt",
+            "in": "query",
+            "description": "Observer altitude above sea level in meters",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "format": "double",
+              "nullable": true
+            }
+          },
+          {
+            "name": "time",
+            "in": "query",
+            "description": "UTC timestamp for calculation epoch (defaults to current time if omitted)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Overhead satellite computed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OverheadResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Missing or invalid JWT token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No satellite overhead found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/v1/pipelines/sync": {
       "post": {
         "tags": [
@@ -520,168 +682,6 @@
           },
           "403": {
             "description": "Forbidden - Insufficient role permissions",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
-      }
-    },
-    "/v1/satellites/decay-watch": {
-      "get": {
-        "tags": [
-          "Astrodynamics"
-        ],
-        "summary": "Atmospheric Drag & Orbital Decay Re-Entry Watch",
-        "description": "Scans the satellite catalog for debris and satellites experiencing severe atmospheric drag or nearing uncontrolled atmospheric re-entry. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).",
-        "operationId": "getDecayWatch",
-        "parameters": [
-          {
-            "name": "max_perigee_km",
-            "in": "query",
-            "description": "Maximum perigee altitude threshold in km to flag re-entry hazard (default: 300.0 km)",
-            "required": false,
-            "schema": {
-              "type": "number",
-              "format": "double",
-              "nullable": true
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "description": "Maximum number of decaying objects to return (default: 50, max: 500)",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "nullable": true,
-              "minimum": 0
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Decay watch scan completed successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DecayWatchResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized - Missing or invalid JWT token",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal calculation error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
-      }
-    },
-    "/v1/satellites/overhead": {
-      "get": {
-        "tags": [
-          "Satellites"
-        ],
-        "summary": "Get Overhead Satellite",
-        "description": "Computes the satellite closest to overhead (highest elevation) across all tracked satellites using parallel Rayon propagation. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).",
-        "operationId": "getOverheadSatellite",
-        "parameters": [
-          {
-            "name": "lat",
-            "in": "query",
-            "description": "Observer latitude in decimal degrees (-90.0 to 90.0)",
-            "required": true,
-            "schema": {
-              "type": "number",
-              "format": "double"
-            }
-          },
-          {
-            "name": "lon",
-            "in": "query",
-            "description": "Observer longitude in decimal degrees (-180.0 to 180.0)",
-            "required": true,
-            "schema": {
-              "type": "number",
-              "format": "double"
-            }
-          },
-          {
-            "name": "alt",
-            "in": "query",
-            "description": "Observer altitude above sea level in meters",
-            "required": false,
-            "schema": {
-              "type": "number",
-              "format": "double",
-              "nullable": true
-            }
-          },
-          {
-            "name": "time",
-            "in": "query",
-            "description": "UTC timestamp for calculation epoch (defaults to current time if omitted)",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "format": "date-time",
-              "nullable": true
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Overhead satellite computed successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OverheadResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized - Missing or invalid JWT token",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "No satellite overhead found",
             "content": {
               "application/json": {
                 "schema": {

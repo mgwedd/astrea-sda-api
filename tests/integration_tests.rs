@@ -126,17 +126,17 @@ async fn test_full_satellite_crud_and_overhead() {
     // 4a. Attempt to test overhead calculation without Authorization -> Expect 401 Unauthorized
     let req = Request::builder()
         .method("GET")
-        .uri("/v1/satellites/overhead?lat=13.923&lon=177.315&time=2021-08-27T16:00:00Z")
+        .uri("/v1/overhead?lat=13.923&lon=177.315&time=2021-08-27T16:00:00Z")
         .body(Body::empty())
         .unwrap();
 
     let response = app.clone().oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
-    // 4b. Test canonical overhead satellite endpoint /v1/satellites/overhead with Bearer auth
+    // 4b. Test canonical overhead satellite endpoint /v1/overhead with Bearer auth
     let req = Request::builder()
         .method("GET")
-        .uri("/v1/satellites/overhead?lat=13.923&lon=177.315&time=2021-08-27T16:00:00Z")
+        .uri("/v1/overhead?lat=13.923&lon=177.315&time=2021-08-27T16:00:00Z")
         .header("authorization", format!("Bearer {}", token))
         .body(Body::empty())
         .unwrap();
@@ -196,7 +196,7 @@ async fn test_openapi_and_swagger_ui_endpoints() {
     assert!(openapi_json["openapi"].as_str().unwrap().starts_with("3."));
     assert!(openapi_json["paths"]["/v1/satellites"].is_object());
     assert!(openapi_json["paths"]["/v1/satellites/{id}"].is_object());
-    assert!(openapi_json["paths"]["/v1/satellites/overhead"].is_object());
+    assert!(openapi_json["paths"]["/v1/overhead"].is_object());
     assert!(openapi_json["paths"]["/v1/pipelines/sync"].is_object());
     assert!(openapi_json["components"]["schemas"]["Satellite"].is_object());
     assert!(openapi_json["components"]["schemas"]["Tle"].is_object());
