@@ -353,7 +353,7 @@ $$
 |\phi_0| + \sigma \ge 90^\circ
 $$
 
-then $\cos\phi_0 \to 0$ makes $\sin\sigma / \cos\phi_0$ ill-conditioned and $\Delta\lambda_{\text{half}}$ is meaningless. The footprint is treated as covering the pole: its bounding box is the full longitude range $[-180^\circ, +180^\circ]$ and its latitude range extends to the pole ($[\phi_0 - \sigma, +90^\circ]$ for $\phi_0 \ge 0$, $[-90^\circ, \phi_0 + \sigma]$ for $\phi_0 < 0$). The division below is never evaluated in this case. (Note $\sin\sigma \ge \cos\phi_0 \iff |\phi_0| + \sigma \ge 90^\circ$, so the guard is exactly the condition under which the clamp below would saturate.)
+then $\cos\phi_0 \to 0$ makes $\sin\sigma / \cos\phi_0$ ill-conditioned and $\Delta\lambda_{\text{half}}$ is meaningless. The footprint is treated as covering the pole and is not representable as a single simple polygon ring: `footprint_ring_is_simple` returns false and no ring is emitted (no polar-cap bounding box is constructed). The division below is never evaluated in this case. (Note $\sin\sigma \ge \cos\phi_0 \iff |\phi_0| + \sigma \ge 90^\circ$, so the guard is exactly the condition under which the clamp below would saturate.)
 
 Otherwise, a spherical cap is topologically simple on a planar map projection if:
 1. It does not enclose a geographic pole (guard above fails):
@@ -683,14 +683,14 @@ $$
    \Omega = \begin{cases}
    \arccos\left(\frac{n_x}{n}\right), & n_y \ge 0 \\
    360^\circ - \arccos\left(\frac{n_x}{n}\right), & n_y < 0
-   \end{cases} \quad (\text{undefined if } n < 10^{-8}; \text{ see §7.6})
+   \end{cases} \quad (\text{undefined if } n/h < 10^{-8}, \text{ i.e. } \sin i; \text{ see §7.6})
    $$
 4. **Argument of Perigee ($\omega$)**:
    $$
    \omega = \begin{cases}
    \arccos\left(\frac{\vec{n}\cdot\vec{e}}{n e}\right), & e_z \ge 0 \\
    360^\circ - \arccos\left(\frac{\vec{n}\cdot\vec{e}}{n e}\right), & e_z < 0
-   \end{cases} \quad (\text{undefined if } n < 10^{-8} \lor e < 10^{-6}; \text{ see §7.6})
+   \end{cases} \quad (\text{undefined if } n/h < 10^{-8} \lor e < 10^{-6}; \text{ see §7.6})
    $$
 
 ### 7.4 Anomaly Conversions (True $\nu$, Eccentric $E$, Mean $M$)
@@ -820,7 +820,7 @@ $$
 where $H$ is the atmospheric density scale height ($H \sim 5\text{--}8\text{ km}$ at 150–300 km). The TLE-derived form $L \approx H n / (2\dot{n} a)$ is withdrawn: $\dot{n}$ is a fit artifact (§11.1) and the correct relation from $n^2 a^3 = \mu_\oplus$ is $\dot{a} = -\tfrac{2}{3} a \dot{n}/n$.
 
 ### 9.4 NASA/NORAD Re-entry Risk Regimes
-The decay risk score $S_{\text{risk}} \in [0, 100]$ and the regime are evaluated from perigee altitude (no $B^*$ dependence). The API reports no point lifetime estimate (`orbitalLifetimeDaysEstimate` is omitted) because a TLE alone contains no physical ballistic coefficient (§9.2); the lifetime column is the regime's nominal range $h_p = a(1 - e) - R_E$:
+The decay risk score $S_{\text{risk}} \in [0, 100]$ and the regime are evaluated from perigee altitude (no $B^*$ dependence). The decay-watch scan (`/decay-watch`) selects objects by perigee altitude $\le$ `max_perigee_km` only (default 300 km); there is no $B^*$ filter. Scores below 100 km perigee are clamped to 100. The API reports no point lifetime estimate (`orbitalLifetimeDaysEstimate` is omitted) because a TLE alone contains no physical ballistic coefficient (§9.2); the lifetime column is the regime's nominal range $h_p = a(1 - e) - R_E$:
 
 | Perigee Altitude ($h_p$) | Status / Regime | Estimated Lifetime | Operational Risk Score ($S$) |
 |---|---|---|---|

@@ -310,7 +310,6 @@ pub struct DecayWatchResponse {
     pub scanned_satellites_count: usize,
     pub decaying_satellites_found: usize,
     pub threshold_perigee_km: f64,
-    pub threshold_bstar: f64,
     pub objects: Vec<SatelliteDecayRiskResponse>,
 }
 

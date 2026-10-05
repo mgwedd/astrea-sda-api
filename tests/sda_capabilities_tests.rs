@@ -162,7 +162,7 @@ fn test_decay_risk_and_decay_watch() {
     assert!(debris_risk.reentry_risk_score > 80.0);
 
     let catalog = vec![iss, debris];
-    let watch: DecayWatchResponse = scan_decay_watch(&catalog, 300.0, 0.001, 10);
+    let watch: DecayWatchResponse = scan_decay_watch(&catalog, 300.0, 10);
     assert_eq!(watch.decaying_satellites_found, 1);
     assert_eq!(watch.objects[0].satellite_name, "DECAYING DEBRIS");
 }

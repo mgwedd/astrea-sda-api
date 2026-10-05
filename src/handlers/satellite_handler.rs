@@ -87,8 +87,6 @@ pub struct StateVectorQueryParams {
 pub struct DecayWatchQueryParams {
     /// Maximum perigee altitude threshold in km to flag re-entry hazard (default: 300.0 km)
     pub max_perigee_km: Option<f64>,
-    /// Minimum B* atmospheric drag coefficient threshold (default: 0.0001)
-    pub min_bstar: Option<f64>,
     /// Maximum number of decaying objects to return (default: 50, max: 500)
     pub limit: Option<usize>,
 }
@@ -1244,15 +1242,13 @@ pub async fn get_decay_watch(
     claims.require_role(UserRole::Viewer)?;
     let satellites = repo.list_satellites().await?;
     let max_perigee = params.max_perigee_km.unwrap_or(300.0);
-    let min_bstar = params.min_bstar.unwrap_or(0.0001);
     let limit = params.limit.unwrap_or(50).clamp(1, 500);
 
     let time_bucket = Utc::now().timestamp() / 60;
     let cache_key = format!(
-        "decay_watch:{}:{:.1}:{:.6}:{}:{}",
+        "decay_watch:{}:{:.1}:{}:{}",
         satellites.len(),
         max_perigee,
-        min_bstar,
         limit,
         time_bucket
     );
@@ -1261,7 +1257,7 @@ pub async fn get_decay_watch(
         .cache
         .get_or_insert_with(&cache_key, || async move {
             let watch_res = tokio::task::spawn_blocking(move || {
-                astrodynamics::scan_decay_watch(&satellites, max_perigee, min_bstar, limit)
+                astrodynamics::scan_decay_watch(&satellites, max_perigee, limit)
             })
             .await
             .map_err(|e| e.to_string())?;
@@ -1296,6 +1292,11 @@ pub async fn calculate_collision_probability(
 ) -> Result<Json<CollisionProbabilityResponse>, AppError> {
     claims.require_role(UserRole::Viewer)?;
     let hbr = req.hard_body_radius_m.unwrap_or(10.0);
+    if !hbr.is_finite() || hbr <= 0.0 {
+        return Err(AppError::BadRequest(
+            "hardBodyRadiusM must be a positive finite number".to_string(),
+        ));
+    }
     if !(req.sigma_1_m.is_finite() && req.sigma_2_m.is_finite())
         || req.sigma_1_m <= 0.0
         || req.sigma_2_m <= 0.0

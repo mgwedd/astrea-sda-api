@@ -1952,15 +1952,14 @@ pub fn calculate_decay_risk(satellite: &Satellite) -> Result<SatelliteDecayRiskR
 pub fn scan_decay_watch(
     satellites: &[Satellite],
     max_perigee_km: f64,
-    min_bstar: f64,
     limit: usize,
 ) -> DecayWatchResponse {
     let mut objects: Vec<SatelliteDecayRiskResponse> = satellites
         .par_iter()
         .filter_map(|sat| {
-            calculate_decay_risk(sat).ok().filter(|risk| {
-                risk.perigee_altitude_km <= max_perigee_km || risk.bstar_drag >= min_bstar
-            })
+            calculate_decay_risk(sat)
+                .ok()
+                .filter(|risk| risk.perigee_altitude_km <= max_perigee_km)
         })
         .collect();
 
@@ -1976,7 +1975,6 @@ pub fn scan_decay_watch(
         scanned_satellites_count: satellites.len(),
         decaying_satellites_found: objects.len(),
         threshold_perigee_km: max_perigee_km,
-        threshold_bstar: min_bstar,
         objects,
     }
 }

@@ -557,17 +557,6 @@
             }
           },
           {
-            "name": "min_bstar",
-            "in": "query",
-            "description": "Minimum B* atmospheric drag coefficient threshold (default: 0.0001)",
-            "required": false,
-            "schema": {
-              "type": "number",
-              "format": "double",
-              "nullable": true
-            }
-          },
-          {
             "name": "limit",
             "in": "query",
             "description": "Maximum number of decaying objects to return (default: 50, max: 500)",
@@ -2461,7 +2450,6 @@
           "scannedSatellitesCount",
           "decayingSatellitesFound",
           "thresholdPerigeeKm",
-          "thresholdBstar",
           "objects"
         ],
         "properties": {
@@ -2478,10 +2466,6 @@
           "scannedSatellitesCount": {
             "type": "integer",
             "minimum": 0
-          },
-          "thresholdBstar": {
-            "type": "number",
-            "format": "double"
           },
           "thresholdPerigeeKm": {
             "type": "number",
