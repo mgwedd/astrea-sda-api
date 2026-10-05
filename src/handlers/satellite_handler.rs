@@ -12,7 +12,7 @@ use crate::models::{
 };
 use crate::pagination::{PaginatedResponse, PaginationQuery};
 use crate::repository::SatelliteRepository;
-use crate::services::compute::QUOTA_EXCEEDED;
+use crate::services::compute::error_status;
 use crate::services::ephemeris::Ephemeris;
 use crate::services::pipeline::{CelesTrakGroup, DiscoveryPipeline};
 use crate::services::{astrodynamics, czml, maneuver};
@@ -168,10 +168,13 @@ fn map_calculation_error(e: String) -> AppError {
         || e.contains("Failed to parse TLE")
     {
         AppError::Sgp4Error(e)
-    } else if e == QUOTA_EXCEEDED {
-        AppError::TooManyRequests(e)
     } else {
-        AppError::InternalServerError(e)
+        match error_status(&e) {
+            StatusCode::TOO_MANY_REQUESTS => AppError::TooManyRequests(e),
+            StatusCode::SERVICE_UNAVAILABLE => AppError::ServiceUnavailable(e),
+            StatusCode::GATEWAY_TIMEOUT => AppError::GatewayTimeout(e),
+            _ => AppError::InternalServerError(e),
+        }
     }
 }
 
@@ -560,6 +563,8 @@ pub async fn get_next_visible(
         (status = 401, description = "Unauthorized - Missing or invalid JWT token", body = ErrorResponse),
         (status = 404, description = "Satellite not found", body = ErrorResponse),
         (status = 429, description = "Per-user concurrent compute quota exceeded (COMPUTE_JOB_QUOTA_BY_ROLE, default 5; admin 50); retry when a job finishes", body = ErrorResponse),
+        (status = 503, description = "No compute slot freed within the queue wait; retry shortly", body = ErrorResponse),
+        (status = 504, description = "Computation exceeded the 30 s limit", body = ErrorResponse),
         (status = 500, description = "Internal calculation error", body = ErrorResponse)
     ),
     security(("bearer_auth" = [])),
@@ -601,7 +606,7 @@ pub async fn get_ground_track(
     );
 
     let engine = repo.compute.clone();
-    let (user_id, role) = (claims.sub.clone(), claims.role.clone());
+    let (user_id, role) = (claims.sub.clone(), claims.canonical_role());
     let res = repo
         .cache
         .get_or_insert_with(&cache_key, || async move {
@@ -1043,7 +1048,9 @@ pub async fn get_lunar_transits(
         (status = 200, description = "Satellite pass schedule computed successfully", body = PassScheduleResponse),
         (status = 401, description = "Unauthorized - Missing or invalid JWT token", body = ErrorResponse),
         (status = 404, description = "Satellite not found", body = ErrorResponse),
-        (status = 429, description = "Per-user concurrent compute quota exceeded (COMPUTE_JOB_QUOTA_BY_ROLE, default 5; admin 50); retry when a job finishes", body = ErrorResponse)
+        (status = 429, description = "Per-user concurrent compute quota exceeded (COMPUTE_JOB_QUOTA_BY_ROLE, default 5; admin 50); retry when a job finishes", body = ErrorResponse),
+        (status = 503, description = "No compute slot freed within the queue wait; retry shortly", body = ErrorResponse),
+        (status = 504, description = "Computation exceeded the 30 s limit", body = ErrorResponse)
     ),
     security(("bearer_auth" = [])),
     tag = "Satellites"
@@ -1080,7 +1087,7 @@ pub async fn get_satellite_passes(
     );
 
     let engine = repo.compute.clone();
-    let (user_id, role) = (claims.sub.clone(), claims.role.clone());
+    let (user_id, role) = (claims.sub.clone(), claims.canonical_role());
     let res = repo
         .cache
         .get_or_insert_with(&cache_key, || async move {
@@ -1102,8 +1109,10 @@ pub async fn get_satellite_passes(
                             &cancel,
                         )?;
                         if include_czml {
-                            res.czml =
-                                Some(czml::passes_document(&satellite, &res.passes, &cancel)?);
+                            let (doc, dropped) =
+                                czml::passes_document(&satellite, &res.passes, &cancel)?;
+                            res.czml = Some(doc);
+                            res.czml_dropped_samples = Some(dropped);
                         }
                         Ok::<_, AppError>(res)
                     },

@@ -233,6 +233,9 @@ pub struct PassScheduleResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<Vec<Object>>)]
     pub czml: Option<serde_json::Value>,
+    /// Sample instants SGP4 could not produce for the CZML tracks (only when `format=czml`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub czml_dropped_samples: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

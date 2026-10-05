@@ -1375,6 +1375,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "No compute slot freed within the queue wait; retry shortly",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Computation exceeded the 30 s limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1826,6 +1846,26 @@
           },
           "429": {
             "description": "Per-user concurrent compute quota exceeded (COMPUTE_JOB_QUOTA_BY_ROLE, default 5; admin 50); retry when a job finishes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No compute slot freed within the queue wait; retry shortly",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Computation exceeded the 30 s limit",
             "content": {
               "application/json": {
                 "schema": {
@@ -3617,6 +3657,12 @@
             },
             "description": "CZML document with one entity per pass (only when `format=czml`)",
             "nullable": true
+          },
+          "czmlDroppedSamples": {
+            "type": "integer",
+            "description": "Sample instants SGP4 could not produce for the CZML tracks (only when `format=czml`)",
+            "nullable": true,
+            "minimum": 0
           },
           "elevationThresholdDeg": {
             "type": "number",

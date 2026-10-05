@@ -13,6 +13,21 @@ use tracing::{debug, warn};
 /// Semaphores are keyed by (user, quota) so a role change cannot reuse a semaphore of the wrong size.
 pub type QuotaKey = (String, usize);
 pub const QUOTA_EXCEEDED: &str = "User quota exceeded";
+pub const CAPACITY_FULL: &str = "Compute capacity full";
+pub const TIMED_OUT: &str = "Execution timed out";
+const WORKER_PANICKED: &str = "Worker panicked";
+/// Longest a job waits for a free express/heavy slot before being turned away.
+const QUEUE_WAIT: Duration = Duration::from_secs(5);
+
+/// HTTP status for an engine failure string (anything unrecognised is a 500).
+pub fn error_status(e: &str) -> StatusCode {
+    match e {
+        QUOTA_EXCEEDED => StatusCode::TOO_MANY_REQUESTS,
+        CAPACITY_FULL => StatusCode::SERVICE_UNAVAILABLE,
+        TIMED_OUT => StatusCode::GATEWAY_TIMEOUT,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
 
 /// Holds one slot of a user's quota. On drop the user's semaphore is evicted once idle,
 /// so `user_limits` holds only users with work in flight.
@@ -41,6 +56,8 @@ pub struct AstreaComputeEngine {
     pub heavy_limit: Arc<Semaphore>,
     pub user_limits: Arc<DashMap<QuotaKey, Arc<Semaphore>>>,
     pub job_quota: RoleQuota,
+    /// How long a job may wait for a free pool slot (bounds queueing behind long jobs).
+    pub queue_wait: Duration,
     pub flight_tracker: MokaCache<u64, String>,
     pub redis_pool: Option<RedisPool>,
 }
@@ -100,6 +117,7 @@ impl AstreaComputeEngine {
             heavy_limit,
             user_limits,
             job_quota: config.compute_job_quota.clone(),
+            queue_wait: QUEUE_WAIT,
             flight_tracker,
             redis_pool,
         }
@@ -179,10 +197,10 @@ impl AstreaComputeEngine {
             (&self.heavy_pool, &self.heavy_limit)
         };
 
-        let _global_permit = global_sem
-            .acquire()
+        let _global_permit = tokio::time::timeout(self.queue_wait, global_sem.acquire())
             .await
-            .map_err(|_| "Compute capacity full".to_string())?;
+            .map_err(|_| CAPACITY_FULL.to_string())?
+            .map_err(|_| CAPACITY_FULL.to_string())?;
 
         let (tx, rx) = oneshot::channel();
         let cancel_token = CancellationToken::new();
@@ -196,8 +214,8 @@ impl AstreaComputeEngine {
         let _drop_guard = cancel_token.drop_guard();
         tokio::time::timeout(Duration::from_secs(30), rx)
             .await
-            .map_err(|_| "Execution timed out".to_string())?
-            .map_err(|_| "Worker panicked".to_string())
+            .map_err(|_| TIMED_OUT.to_string())?
+            .map_err(|_| WORKER_PANICKED.to_string())
     }
 
     /// Executes compute within the L1/L2 Coalescing Swimlane Pipeline
@@ -262,13 +280,6 @@ impl AstreaComputeEngine {
             })
             .await;
 
-        result.map_err(|e: std::sync::Arc<String>| {
-            let status = if e.as_str() == QUOTA_EXCEEDED {
-                StatusCode::TOO_MANY_REQUESTS
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
-            (status, e.as_ref().clone())
-        })
+        result.map_err(|e: std::sync::Arc<String>| (error_status(&e), e.as_ref().clone()))
     }
 }

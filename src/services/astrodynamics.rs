@@ -1487,6 +1487,7 @@ pub fn find_pass_schedule(
         passes_found: passes.len(),
         passes,
         czml: None,
+        czml_dropped_samples: None,
     })
 }
 

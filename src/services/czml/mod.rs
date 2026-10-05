@@ -5,7 +5,7 @@ mod packet;
 
 use crate::error::AppError;
 use crate::models::{GroundTrackPoint, Satellite, SatellitePass};
-use crate::services::ephemeris::Ephemeris;
+use crate::services::ephemeris::{Ephemeris, Samples};
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -75,22 +75,30 @@ pub fn trajectory_document(id: Uuid, name: &str, points: &[GroundTrackPoint]) ->
 const PASS_STEP_SECS: usize = 30;
 
 /// One entity per pass, sampled over [AOS, LOS] (re-propagated; passes carry
-/// events only). Pass count and window follow the passes endpoint, not the
+/// events only). Also returns how many sample instants SGP4 could not produce. Pass count and window follow the passes endpoint, not the
 /// scene caps.
 pub fn passes_document(
     satellite: &Satellite,
     passes: &[SatellitePass],
     cancel: &CancellationToken,
-) -> Result<Value, AppError> {
+) -> Result<(Value, usize), AppError> {
     let eph = Ephemeris::from_satellite(satellite)?;
+    let mut dropped_total = 0;
     let tracks = passes
         .iter()
         .map(|p| {
             let span = (p.los_time - p.aos_time).num_seconds().max(1) as usize;
-            let mut points = eph.range(p.aos_time, span, PASS_STEP_SECS, cancel)?.points;
+            let Samples {
+                mut points,
+                dropped,
+            } = eph.range(p.aos_time, span, PASS_STEP_SECS, cancel)?;
+            dropped_total += dropped;
             // range() floors span/step; make sure the track ends exactly at LOS.
             if points.last().is_some_and(|l| l.timestamp < p.los_time) {
-                points.extend(eph.at(p.los_time));
+                match eph.at(p.los_time) {
+                    Some(last) => points.push(last),
+                    None => dropped_total += 1,
+                }
             }
             Ok(Track {
                 id: format!("{}-pass-{}", satellite.id, p.pass_id),
@@ -99,10 +107,8 @@ pub fn passes_document(
             })
         })
         .collect::<Result<Vec<_>, AppError>>()?;
-    Ok(tracks_document(
-        &format!("Passes for {}", satellite.name),
-        &tracks,
-    ))
+    let doc = tracks_document(&format!("Passes for {}", satellite.name), &tracks);
+    Ok((doc, dropped_total))
 }
 
 #[cfg(test)]
@@ -113,11 +119,29 @@ mod tests {
     #[test]
     fn position_states_frame_and_interpolation_explicitly() {
         let t = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
-        let pos = packet::sampled_position(t, [(t, [7000.0, 0.0, 0.0])]);
+        let samples = (0..9).map(|i| (t + chrono::Duration::seconds(30 * i), [7000.0, 0.0, 0.0]));
+        let pos = packet::sampled_position(t, samples);
         assert_eq!(pos["referenceFrame"], "FIXED");
         assert_eq!(pos["interpolationAlgorithm"], "LAGRANGE");
         assert_eq!(pos["interpolationDegree"], 5);
-        assert_eq!(pos["cartesian"], json!([0.0, 7_000_000.0, 0.0, 0.0]));
+        assert_eq!(pos["cartesian"][1], 7_000_000.0);
+        assert_eq!(pos["cartesian"].as_array().unwrap().len(), 36);
+    }
+
+    #[test]
+    fn degree_never_exceeds_sample_count() {
+        let t = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let at = |n: i64| {
+            let s = (0..n).map(|i| (t + chrono::Duration::seconds(30 * i), [7000.0, 0.0, 0.0]));
+            packet::sampled_position(t, s)
+        };
+        assert_eq!(at(9)["interpolationDegree"], 5);
+        assert_eq!(at(6)["interpolationDegree"], 5);
+        assert_eq!(at(4)["interpolationDegree"], 3);
+        assert_eq!(at(2)["interpolationDegree"], 1);
+        // A single sample is a constant: no interpolation properties at all.
+        assert!(at(1).get("interpolationAlgorithm").is_none());
+        assert!(at(1).get("interpolationDegree").is_none());
     }
 
     #[test]
@@ -144,7 +168,8 @@ mod tests {
         let live = CancellationToken::new();
         let sched = find_pass_schedule(&sat, 40.0, -75.0, 0.0, t0, 5.0, 1, false, &live).unwrap();
         assert!(!sched.passes.is_empty());
-        let doc = passes_document(&sat, &sched.passes, &live).unwrap();
+        let (doc, dropped) = passes_document(&sat, &sched.passes, &live).unwrap();
+        assert_eq!(dropped, 0);
         let doc = doc.as_array().unwrap();
         assert_eq!(doc.len(), sched.passes.len() + 1);
         let pass = &sched.passes[0];

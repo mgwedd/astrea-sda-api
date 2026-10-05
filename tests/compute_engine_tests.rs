@@ -157,7 +157,7 @@ async fn user_quota_rejects_instead_of_queueing_and_evicts_idle_users() {
     // More express slots than the 5 held jobs, so the other callers reach the quota check.
     let engine = AstreaComputeEngine::new(&ServerConfig {
         express_cores: 10,
-        compute_job_quota: RoleQuota::parse("default=5,admin=50"),
+        compute_job_quota: RoleQuota::parse("default=5,admin=50").unwrap(),
         ..ServerConfig::from_env()
     });
     let (started, stopped) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
@@ -217,7 +217,7 @@ async fn admin_quota_comes_from_its_own_role_entry() {
     // Enough express slots that only the per-user quota can reject.
     let engine = AstreaComputeEngine::new(&ServerConfig {
         express_cores: 60,
-        compute_job_quota: RoleQuota::parse("default=5,admin=50"),
+        compute_job_quota: RoleQuota::parse("default=5,admin=50").unwrap(),
         ..ServerConfig::from_env()
     });
     let (started, stopped) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
@@ -247,7 +247,7 @@ async fn admin_quota_comes_from_its_own_role_entry() {
 #[tokio::test]
 async fn user_quota_follows_config() {
     let engine = AstreaComputeEngine::new(&ServerConfig {
-        compute_job_quota: RoleQuota::parse("default=1"),
+        compute_job_quota: RoleQuota::parse("default=1").unwrap(),
         ..ServerConfig::from_env()
     });
     let (started, stopped) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
@@ -265,17 +265,155 @@ async fn user_quota_follows_config() {
 }
 
 #[test]
-fn role_quota_parses_and_falls_back() {
-    let q = RoleQuota::parse(" default=2, Editor=10 ,admin=50");
+fn role_quota_parses_and_rejects_malformed_specs() {
+    let q = RoleQuota::parse(" default=2, Editor=10 ,admin=50").unwrap();
     assert_eq!(q.for_role("viewer"), 2);
     assert_eq!(q.for_role("unknown-role"), 2);
     assert_eq!(q.for_role("editor"), 10);
     assert_eq!(q.for_role("EDITOR"), 10);
     assert_eq!(q.for_role("admin"), 50);
 
-    // Garbage, zero and negative entries are skipped; no `default` means 5.
-    let bad = RoleQuota::parse("admin=0,editor=x,viewer,=3,admin=-1,");
-    assert_eq!(bad.for_role("admin"), 5);
-    assert_eq!(bad.for_role("editor"), 5);
-    assert_eq!(bad, RoleQuota::parse(""));
+    // No `default` entry means 5; an empty spec is all defaults.
+    assert_eq!(RoleQuota::parse("admin=7").unwrap().for_role("viewer"), 5);
+    assert_eq!(
+        RoleQuota::parse("").unwrap(),
+        RoleQuota::parse("default=5").unwrap()
+    );
+
+    for bad in [
+        "admin=0",
+        "editor=x",
+        "viewer",
+        "=3",
+        "admin=-1",
+        "admin=5,oops",
+    ] {
+        assert!(RoleQuota::parse(bad).is_err(), "{bad} should be rejected");
+    }
+}
+
+fn instant() -> impl FnOnce(tokio_util::sync::CancellationToken) -> Result<(), ()> + Send + 'static
+{
+    |_| Ok(())
+}
+
+#[tokio::test]
+async fn full_pool_turns_callers_away_after_the_queue_wait_instead_of_hanging() {
+    let mut engine = AstreaComputeEngine::new(&ServerConfig {
+        express_cores: 1,
+        compute_job_quota: RoleQuota::parse("default=5").unwrap(),
+        ..ServerConfig::from_env()
+    });
+    engine.queue_wait = std::time::Duration::from_millis(100);
+    let (started, stopped) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let (e, s, d) = (engine.clone(), started.clone(), stopped.clone());
+    let hog = tokio::spawn(async move {
+        e.run(1, "a".into(), "viewer".into(), block_until_cancelled(s, d))
+            .await
+    });
+    wait_for(|| started.load(Ordering::SeqCst) == 1).await;
+
+    let t0 = std::time::Instant::now();
+    let err = engine
+        .run(1, "b".into(), "viewer".into(), instant())
+        .await
+        .unwrap_err();
+    assert_eq!(err, "Compute capacity full");
+    assert_eq!(
+        astrea_sda_api::services::compute::error_status(&err),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert!(t0.elapsed() < std::time::Duration::from_secs(2));
+    // The turned-away caller released its user slot.
+    wait_for(|| engine.user_limits.len() == 1).await;
+    hog.abort();
+}
+
+#[test]
+fn engine_failures_map_to_distinct_statuses() {
+    use astrea_sda_api::services::compute::error_status;
+    assert_eq!(
+        error_status("User quota exceeded"),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        error_status("Compute capacity full"),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        error_status("Execution timed out"),
+        StatusCode::GATEWAY_TIMEOUT
+    );
+    assert_eq!(
+        error_status("Worker panicked"),
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+}
+
+#[tokio::test]
+async fn concurrent_hammering_never_exceeds_the_quota_and_leaves_no_residue() {
+    const QUOTA: usize = 2;
+    let engine = AstreaComputeEngine::new(&ServerConfig {
+        express_cores: 8,
+        compute_job_quota: RoleQuota::parse("default=2").unwrap(),
+        ..ServerConfig::from_env()
+    });
+    let (running, peak) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let (accepted, rejected) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let mut tasks = Vec::new();
+    for i in 0..400 {
+        let (e, run, pk) = (engine.clone(), running.clone(), peak.clone());
+        let (acc, rej) = (accepted.clone(), rejected.clone());
+        let user = format!("u{}", i % 3);
+        tasks.push(tokio::spawn(async move {
+            let res = e
+                .run(1, user, "viewer".into(), move |_| -> Result<(), ()> {
+                    let now = run.fetch_add(1, Ordering::SeqCst) + 1;
+                    pk.fetch_max(now, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_micros(200));
+                    run.fetch_sub(1, Ordering::SeqCst);
+                    Ok(())
+                })
+                .await;
+            match res {
+                Ok(_) => acc.fetch_add(1, Ordering::SeqCst),
+                Err(m) if m == "User quota exceeded" => rej.fetch_add(1, Ordering::SeqCst),
+                Err(m) => panic!("unexpected engine error: {m}"),
+            };
+        }));
+    }
+    for t in tasks {
+        t.await.unwrap();
+    }
+    // 3 users x QUOTA is the most that can ever run at once.
+    assert!(
+        peak.load(Ordering::SeqCst) <= 3 * QUOTA,
+        "peak {}",
+        peak.load(Ordering::SeqCst)
+    );
+    assert!(accepted.load(Ordering::SeqCst) > 0 && rejected.load(Ordering::SeqCst) > 0);
+    assert_eq!(
+        accepted.load(Ordering::SeqCst) + rejected.load(Ordering::SeqCst),
+        400
+    );
+    wait_for(|| engine.user_limits.is_empty()).await;
+}
+
+#[test]
+fn quota_role_uses_the_same_aliases_as_role_level() {
+    let claims = |role: &str| -> astrea_sda_api::auth::claims::Claims {
+        serde_json::from_value(serde_json::json!({"sub": "u", "exp": 0, "iat": 0, "role": role}))
+            .unwrap()
+    };
+    for (role, canonical) in [
+        ("superuser", "admin"),
+        ("Admin", "admin"),
+        ("operator", "editor"),
+        ("reader", "viewer"),
+        ("custom-role", "custom-role"),
+    ] {
+        assert_eq!(claims(role).canonical_role(), canonical, "{role}");
+    }
+    let q = RoleQuota::parse("default=5,admin=50").unwrap();
+    assert_eq!(q.for_role(&claims("superuser").canonical_role()), 50);
 }

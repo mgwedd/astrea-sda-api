@@ -201,5 +201,6 @@ mod http {
         let n = body["passes"].as_array().unwrap().len();
         assert!(n > 0);
         assert_eq!(body["czml"].as_array().unwrap().len(), n + 1);
+        assert_eq!(body["czmlDroppedSamples"], 0);
     }
 }

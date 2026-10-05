@@ -24,28 +24,26 @@ pub struct RoleQuota {
 }
 
 impl RoleQuota {
-    /// Parses `role=limit` pairs, e.g. `default=5,editor=10,admin=50`. Malformed or zero
-    /// entries are skipped with a warning (a typo must not reject every request), and a
-    /// missing `default` falls back to 5.
-    pub fn parse(spec: &str) -> Self {
+    /// Parses `role=limit` pairs, e.g. `default=5,editor=10,admin=50`. A missing `default`
+    /// is 5. Anything malformed (no `=`, empty role, non-positive or non-numeric limit) is
+    /// an error: a misconfigured quota must stop startup, not silently change limits.
+    pub fn parse(spec: &str) -> Result<Self, String> {
         let mut by_role = HashMap::new();
         for entry in spec.split(',').map(str::trim).filter(|e| !e.is_empty()) {
-            match entry.split_once('=') {
-                Some((role, n)) => match n.trim().parse::<usize>() {
-                    Ok(n) if n > 0 && !role.trim().is_empty() => {
-                        by_role.insert(role.trim().to_ascii_lowercase(), n);
-                    }
-                    _ => tracing::warn!(
-                        "ignoring compute quota entry {entry:?}: needs a role and a positive integer limit"
-                    ),
-                },
-                None => {
-                    tracing::warn!("ignoring compute quota entry {entry:?}: expected role=limit")
-                }
-            }
+            let (role, n) = entry
+                .split_once('=')
+                .ok_or_else(|| format!("{entry:?}: expected role=limit"))?;
+            let role = role.trim().to_ascii_lowercase();
+            let n: usize = n
+                .trim()
+                .parse()
+                .ok()
+                .filter(|&n| n > 0 && !role.is_empty())
+                .ok_or_else(|| format!("{entry:?}: needs a role and a positive integer limit"))?;
+            by_role.insert(role, n);
         }
         let default = by_role.remove("default").unwrap_or(5);
-        Self { by_role, default }
+        Ok(Self { by_role, default })
     }
 
     pub fn for_role(&self, role: &str) -> usize {
@@ -77,7 +75,8 @@ impl ServerConfig {
             compute_job_quota: RoleQuota::parse(
                 &env::var("COMPUTE_JOB_QUOTA_BY_ROLE")
                     .unwrap_or_else(|_| DEFAULT_COMPUTE_JOB_QUOTA.to_string()),
-            ),
+            )
+            .unwrap_or_else(|e| panic!("invalid COMPUTE_JOB_QUOTA_BY_ROLE: {e}")),
             redis_url: env::var("REDIS_URL").ok(),
         }
     }

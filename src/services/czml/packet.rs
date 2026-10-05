@@ -42,13 +42,23 @@ pub fn sampled_position(
             [dt, p[0] * 1000.0, p[1] * 1000.0, p[2] * 1000.0]
         })
         .collect();
-    json!({
+    let mut pos = json!({
         "epoch": iso(epoch),
         "referenceFrame": FRAME,
-        "interpolationAlgorithm": INTERPOLATION,
-        "interpolationDegree": DEGREE,
         "cartesian": cartesian,
-    })
+    });
+    // Never ask for more interpolation points than the property has samples: how
+    // Cesium treats degree > n-1 is unverified, and one sample needs no interpolation.
+    let degree = DEGREE.min((cartesian_len(&pos) / 4).saturating_sub(1) as u8);
+    if degree >= 1 {
+        pos["interpolationAlgorithm"] = json!(INTERPOLATION);
+        pos["interpolationDegree"] = json!(degree);
+    }
+    pos
+}
+
+fn cartesian_len(position: &Value) -> usize {
+    position["cartesian"].as_array().map_or(0, Vec::len)
 }
 
 /// `path` property with a solid colour.
