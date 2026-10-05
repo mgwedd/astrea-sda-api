@@ -1,4 +1,4 @@
-use crate::config::ServerConfig;
+use crate::config::{ServerConfig, ADMIN_QUOTA_MULTIPLIER};
 use axum::http::StatusCode;
 use dashmap::DashMap;
 use deadpool_redis::{Config as DeadpoolConfig, Pool as RedisPool, Runtime};
@@ -10,10 +10,6 @@ use tokio::sync::{oneshot, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-/// Concurrent in-flight jobs per user; further requests are rejected, not queued.
-const USER_QUOTA: usize = 5;
-/// Admins get 10x the user quota.
-const ADMIN_QUOTA: usize = USER_QUOTA * 10;
 /// Semaphores are keyed by (user, quota) so a role change cannot reuse a semaphore of the wrong size.
 pub type QuotaKey = (String, usize);
 pub const QUOTA_EXCEEDED: &str = "User quota exceeded";
@@ -44,6 +40,7 @@ pub struct AstreaComputeEngine {
     pub express_limit: Arc<Semaphore>,
     pub heavy_limit: Arc<Semaphore>,
     pub user_limits: Arc<DashMap<QuotaKey, Arc<Semaphore>>>,
+    pub user_quota: usize,
     pub flight_tracker: MokaCache<u64, String>,
     pub redis_pool: Option<RedisPool>,
 }
@@ -102,6 +99,7 @@ impl AstreaComputeEngine {
             express_limit,
             heavy_limit,
             user_limits,
+            user_quota: config.user_quota,
             flight_tracker,
             redis_pool,
         }
@@ -140,9 +138,9 @@ impl AstreaComputeEngine {
 
     fn acquire_user(&self, user_id: String, user_role: &str) -> Result<UserPermit, String> {
         let quota = if user_role == "admin" {
-            ADMIN_QUOTA
+            self.user_quota * ADMIN_QUOTA_MULTIPLIER
         } else {
-            USER_QUOTA
+            self.user_quota
         };
         let key = (user_id, quota);
         // `try_acquire` runs while the entry's shard lock is held; see `UserPermit::drop`.

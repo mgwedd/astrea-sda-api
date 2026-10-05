@@ -7,8 +7,12 @@ pub struct ServerConfig {
     pub port: u16,
     pub express_cores: usize,
     pub heavy_cores: usize,
+    /// Concurrent compute jobs per user; admins get `ADMIN_QUOTA_MULTIPLIER` times this.
+    pub user_quota: usize,
     pub redis_url: Option<String>,
 }
+
+pub const ADMIN_QUOTA_MULTIPLIER: usize = 10;
 
 pub type Config = ServerConfig;
 
@@ -28,6 +32,11 @@ impl ServerConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(1),
+            user_quota: env::var("USER_COMPUTE_QUOTA")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|&q| q > 0)
+                .unwrap_or(5),
             redis_url: env::var("REDIS_URL").ok(),
         }
     }

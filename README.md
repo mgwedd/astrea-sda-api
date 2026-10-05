@@ -175,6 +175,7 @@ Customize runtime behavior via `.env` or container environment variables:
 | `ENABLE_DISCOVERY_PIPELINE` | `true` | Enable background CelesTrak TLE ingestion worker. |
 | `MAX_EXPRESS_CORES` | `4` | Rayon thread pool cap for express compute jobs (<5s). |
 | `MAX_HEAVY_CORES` | `8` | Rayon thread pool cap for heavy conjunction scans. |
+| `USER_COMPUTE_QUOTA` | `5` | Concurrent compute jobs per user (admins get 10x); over-quota requests get HTTP 429. |
 | `RATE_LIMIT_ALGORITHM` | `sliding_window` | Rate limiter algorithm (`sliding_window`, `token_bucket`, `noop`). |
 | `RSA_PRIVATE_KEY_FILE` | `.keys/rsa_private.pem` | Path to RSA private key for RS256 token signing. |
 | `RSA_PUBLIC_KEY_FILE` | `.keys/rsa_public.pem` | Path to RSA public key for RS256 token verification. |

@@ -9,6 +9,7 @@ fn test_server_config_defaults_and_env_parsing() {
     // Default safe footprint when ENV vars are omitted (3 express, 1 heavy)
     assert_eq!(config.express_cores, 3);
     assert_eq!(config.heavy_cores, 1);
+    assert_eq!(config.user_quota, 5);
 }
 
 #[test]
@@ -152,6 +153,7 @@ async fn user_quota_rejects_instead_of_queueing_and_evicts_idle_users() {
     // More express slots than the 5 held jobs, so the other callers reach the quota check.
     let engine = AstreaComputeEngine::new(&ServerConfig {
         express_cores: 10,
+        user_quota: 5,
         ..ServerConfig::from_env()
     });
     let (started, stopped) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
@@ -211,6 +213,7 @@ async fn admin_quota_is_ten_times_the_user_quota() {
     // Enough express slots that only the per-user quota can reject.
     let engine = AstreaComputeEngine::new(&ServerConfig {
         express_cores: 60,
+        user_quota: 5,
         ..ServerConfig::from_env()
     });
     let (started, stopped) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
@@ -235,4 +238,24 @@ async fn admin_quota_is_ten_times_the_user_quota() {
     }
     wait_for(|| stopped.load(Ordering::SeqCst) == 50).await;
     wait_for(|| engine.user_limits.is_empty()).await;
+}
+
+#[tokio::test]
+async fn user_quota_follows_config() {
+    let engine = AstreaComputeEngine::new(&ServerConfig {
+        user_quota: 1,
+        ..ServerConfig::from_env()
+    });
+    let (started, stopped) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let (e, s, d) = (engine.clone(), started.clone(), stopped.clone());
+    let h = tokio::spawn(async move {
+        e.run(1, "u".into(), "viewer".into(), block_until_cancelled(s, d))
+            .await
+    });
+    wait_for(|| started.load(Ordering::SeqCst) == 1).await;
+    let over = engine
+        .run(1, "u".into(), "viewer".into(), |_| Ok::<_, ()>(()))
+        .await;
+    assert_eq!(over.err().as_deref(), Some("User quota exceeded"));
+    h.abort();
 }
