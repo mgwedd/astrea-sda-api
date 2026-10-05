@@ -9,7 +9,7 @@ Nothing here shares code with the Rust implementation:
   * Frames: astropy/ERFA (GMST 1982, WGS-84 gd2gc/gc2gd, east/north/up basis) with UT1-UTC
     forced to 0 and polar motion off, which is what the API documents (spec 12.7).
 Regenerate: python3 tests/reference/gen_transform_reference.py > tests/reference/transform_reference.json
-Staleness check (CI): python3 tests/reference/gen_transform_reference.py --check   (needs numpy, astropy)
+Staleness check (manual, not run in CI): python3 tests/reference/gen_transform_reference.py --check   (needs numpy, astropy)
 """
 import json, math, os, sys
 import numpy as np
@@ -188,7 +188,7 @@ def close(a, b, tol=1e-9):
 
 
 if "--check" in sys.argv:
-    # CI: fail if the committed JSON no longer matches what this script produces.
+    # Manual: fail if the committed JSON no longer matches what this script produces.
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "transform_reference.json")
     committed = json.load(open(path))
     if not close(json.loads(json.dumps(out)), committed):
