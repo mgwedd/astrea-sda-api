@@ -5,6 +5,8 @@ All notable changes to the **Astrea SDA API** and **Fern SDKs** will be document
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+> Entries after the latest one below are published as [GitHub Release notes](../../releases); this file is no longer auto-updated because `main` only accepts changes through pull requests.
+
 ---
 
 ## [Unreleased]
