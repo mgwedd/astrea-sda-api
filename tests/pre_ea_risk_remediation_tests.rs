@@ -51,7 +51,6 @@ async fn test_ea_risk_defense_in_depth_unauthenticated_access_is_blocked() {
         ),
         ("DELETE", &format!("/v1/satellites/{}", dummy_id), None),
         ("GET", "/v1/satellites/overhead?lat=0&lon=0", None),
-        ("GET", "/v1/astrodynamics/overhead?lat=0&lon=0", None),
         (
             "GET",
             &format!("/v1/satellites/{}/next-visible?lat=0&lon=0", dummy_id),

@@ -151,17 +151,6 @@ async fn test_full_satellite_crud_and_overhead() {
     assert!(overhead_json["elevation"].is_number());
     assert_eq!(overhead_json["satellite"]["name"], "ATLAS CENTAUR 2");
 
-    // 4c. Test backwards-compatible alias endpoint /v1/astrodynamics/overhead with Bearer auth
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/astrodynamics/overhead?lat=13.923&lon=177.315&time=2021-08-27T16:00:00Z")
-        .header("authorization", format!("Bearer {}", token))
-        .body(Body::empty())
-        .unwrap();
-
-    let response = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-
     // 5a. Delete satellite without authorization -> Expect 401 Unauthorized
     let req = Request::builder()
         .method("DELETE")

@@ -471,7 +471,6 @@ async fn test_unauthenticated_requests_are_rejected_except_login_and_docs() {
         ),
         ("DELETE", &format!("/v1/satellites/{}", dummy_id), None),
         ("GET", "/v1/satellites/overhead?lat=0&lon=0", None),
-        ("GET", "/v1/astrodynamics/overhead?lat=0&lon=0", None),
         (
             "GET",
             &format!("/v1/satellites/{}/next-visible?lat=0&lon=0", dummy_id),

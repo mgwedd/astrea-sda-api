@@ -175,7 +175,6 @@ pub fn create_router_with_auth_and_limiter(
                 .delete(handlers::delete_satellite),
         )
         .route("/satellites/overhead", get(handlers::get_overhead))
-        .route("/astrodynamics/overhead", get(handlers::get_overhead))
         .route("/satellites/decay-watch", get(handlers::get_decay_watch))
         .route("/conjunctions/search", get(handlers::search_conjunctions))
         .route(
