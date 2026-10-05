@@ -153,7 +153,8 @@ fn a08_observer_altitude_is_metres_per_api_docs() {
 #[test]
 fn a09_doppler_range_rate_matches_skyfield() {
     // Skyfield range rate for observer 8 deg north of subpoint: -3.0364 km/s
-    let r = calculate_doppler_shift(&atlas(), 437.5e6, SUB_LAT + 8.0, SUB_LON, 0.0, t0()).unwrap();
+    let r = calculate_doppler_shift(&atlas(), 437.5e6, SUB_LAT + 8.0, SUB_LON, 0.0, t0(), false)
+        .unwrap();
     assert!(
         (r.range_rate_kms + 3.0364).abs() < 0.05,
         "range rate {}",
@@ -164,7 +165,7 @@ fn a09_doppler_range_rate_matches_skyfield() {
 #[test]
 fn a10_doppler_range_rate_far_observer_matches_skyfield() {
     // Skyfield range rate for observer (20, -100): -5.3677 km/s
-    let r = calculate_doppler_shift(&atlas(), 437.5e6, 20.0, -100.0, 0.0, t0()).unwrap();
+    let r = calculate_doppler_shift(&atlas(), 437.5e6, 20.0, -100.0, 0.0, t0(), false).unwrap();
     assert!(
         (r.range_rate_kms + 5.3677).abs() < 0.05,
         "range rate {}",
@@ -267,7 +268,7 @@ fn a19_footprint_is_instantaneous_and_omitted_when_ring_is_not_simple() {
     let gt = generate_ground_track(&atlas(), t0(), 90, 60, true, false).unwrap();
     assert_eq!(
         gt.footprint_radius_km,
-        calculate_footprint_radius(gt.trajectory[0].alt_km)
+        calculate_footprint_radius(gt.trajectory[0].alt_km, gt.trajectory[0].lat)
     );
     assert!(footprint_ring_is_simple(0.0, 0.0, 2000.0));
     assert!(

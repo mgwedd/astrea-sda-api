@@ -54,3 +54,46 @@ fn test_maneuver_reconstruction_with_synthetic_tle_pair() {
         ManeuverType::SemiMajorAxisIncrease
     );
 }
+
+fn checksum(body: &str) -> String {
+    let sum: u32 = body
+        .chars()
+        .map(|c| c.to_digit(10).unwrap_or(u32::from(c == '-')))
+        .sum();
+    format!("{body}{}", sum % 10)
+}
+
+fn tle_at(day: f64, mean_motion: f64) -> Tle {
+    Tle {
+        line_one: checksum(&format!(
+            "1 00694U 63047A   {day:.8}  .00000250  00000-0  20987-4 0  999"
+        )),
+        line_two: checksum(&format!(
+            "2 00694  30.3579   8.5616 0584817  14.9507 346.7615 {mean_motion:11.8}89839"
+        )),
+    }
+}
+
+// A steady drag decay (~0.3 km/day) is the quiescent baseline and must not be flagged once the
+// trailing-median drift is known; only the later step (a ~3 km raise) is a maneuver.
+#[test]
+fn steady_decay_is_baseline_and_only_the_step_is_flagged() {
+    let s = sat(
+        "ATLAS CENTAUR 2",
+        &tle_at(21239.5, 14.0).line_one,
+        &tle_at(21239.5, 14.0).line_two,
+    );
+    let mut history = Vec::new();
+    for k in 0..6 {
+        history.push(tle_at(21239.5 + k as f64, 14.0 + 0.001 * k as f64));
+    }
+    // raise: mean motion drops by 0.01 rev/day relative to the trend
+    history.push(tle_at(21245.5, 14.0 + 0.006 - 0.01));
+
+    let res = reconstruct_maneuvers(&s, &history, None, None, 0.5, 0.005).unwrap();
+    assert_eq!(res.total_maneuvers_detected, 1, "{:?}", res.maneuvers);
+    assert_eq!(
+        res.maneuvers[0].maneuver_type,
+        ManeuverType::SemiMajorAxisIncrease
+    );
+}

@@ -1108,6 +1108,16 @@
               "format": "date-time",
               "nullable": true
             }
+          },
+          {
+            "name": "relativistic",
+            "in": "query",
+            "description": "Use the relativistic Doppler equation with gravitational shift (default: false, classical first-order)",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "nullable": true
+            }
           }
         ],
         "responses": {
@@ -2272,17 +2282,20 @@
         "type": "object",
         "required": [
           "missDistanceKm",
-          "relativeVelocityKms"
+          "relativeVelocityKms",
+          "sigma1M",
+          "sigma2M"
         ],
         "properties": {
-          "combinedPositionUncertaintyM": {
+          "hardBodyRadiusM": {
             "type": "number",
             "format": "double",
             "nullable": true
           },
-          "hardBodyRadiusM": {
+          "missAngleDeg": {
             "type": "number",
             "format": "double",
+            "description": "Angle of the miss vector from the sigma_1 axis in degrees (default 0)",
             "nullable": true
           },
           "missDistanceKm": {
@@ -2292,6 +2305,16 @@
           "relativeVelocityKms": {
             "type": "number",
             "format": "double"
+          },
+          "sigma1M": {
+            "type": "number",
+            "format": "double",
+            "description": "Principal-axis 1-sigma position uncertainty in the encounter plane (metres), major axis"
+          },
+          "sigma2M": {
+            "type": "number",
+            "format": "double",
+            "description": "Principal-axis 1-sigma position uncertainty in the encounter plane (metres), minor axis"
           }
         }
       },
@@ -2301,7 +2324,9 @@
           "missDistanceKm",
           "relativeVelocityKms",
           "hardBodyRadiusM",
-          "combinedUncertaintyM",
+          "sigma1M",
+          "sigma2M",
+          "missAngleDeg",
           "collisionProbability",
           "riskCategory",
           "recommendation"
@@ -2311,11 +2336,11 @@
             "type": "number",
             "format": "double"
           },
-          "combinedUncertaintyM": {
+          "hardBodyRadiusM": {
             "type": "number",
             "format": "double"
           },
-          "hardBodyRadiusM": {
+          "missAngleDeg": {
             "type": "number",
             "format": "double"
           },
@@ -2332,6 +2357,14 @@
           },
           "riskCategory": {
             "type": "string"
+          },
+          "sigma1M": {
+            "type": "number",
+            "format": "double"
+          },
+          "sigma2M": {
+            "type": "number",
+            "format": "double"
           }
         }
       },

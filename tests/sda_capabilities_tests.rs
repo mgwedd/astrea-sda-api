@@ -169,20 +169,51 @@ fn test_decay_risk_and_decay_watch() {
 
 #[test]
 fn test_foster_collision_probability() {
-    // Direct head-on close miss: 50 meters miss distance, 50m uncertainty
+    // 50 m miss, isotropic 50 m sigma, 10 m HBR
     let res: CollisionProbabilityResponse =
-        calculate_foster_collision_probability(0.05, 14.5, 10.0, 50.0);
-
-    assert!(res.collision_probability > 0.0);
-    assert!(res.collision_probability < 1.0);
+        calculate_foster_collision_probability(0.05, 14.5, 10.0, 50.0, 50.0, 0.0);
     assert_eq!(res.hard_body_radius_m, 10.0);
-    assert_eq!(res.combined_uncertainty_m, 50.0);
+    assert_eq!((res.sigma_1_m, res.sigma_2_m), (50.0, 50.0));
     assert_eq!(res.risk_category, "Critical (Pc >= 1e-4)");
 
-    // Far miss: 10 km miss distance -> negligible collision probability
-    let far_res = calculate_foster_collision_probability(10.0, 10.0, 10.0, 50.0);
-    assert!(far_res.collision_probability < 1e-10);
-    assert_eq!(far_res.risk_category, "Negligible (Pc < 1e-7)");
+    // Far miss: 10 km -> negligible
+    let far = calculate_foster_collision_probability(10.0, 10.0, 10.0, 50.0, 50.0, 0.0);
+    assert!(far.collision_probability < 1e-10);
+    assert_eq!(far.risk_category, "Negligible (Pc < 1e-7)");
+}
+
+// Oracle: isotropic direct hit has the exact closed form 1 - exp(-R^2 / 2 sigma^2).
+#[test]
+fn foster_pc_isotropic_direct_hit_matches_closed_form() {
+    let r = calculate_foster_collision_probability(0.0, 7.0, 10.0, 50.0, 50.0, 0.0);
+    let exact = 1.0 - (-(10.0f64 * 10.0) / (2.0 * 50.0 * 50.0)).exp();
+    assert!((r.collision_probability - exact).abs() < 1e-9 * exact.max(1.0));
+}
+
+// Oracle: for R << sigma_min the constant-density Akella-Alfriend form (spec 10.5) holds.
+#[test]
+fn foster_pc_anisotropic_matches_constant_density_form() {
+    let (r, s1, s2) = (1.0f64, 500.0f64, 50.0f64);
+    let (d, alpha) = (80.0f64, 35.0f64.to_radians());
+    let (m1, m2) = (d * alpha.cos(), d * alpha.sin());
+    let expected =
+        r * r / (2.0 * s1 * s2) * (-0.5 * (m1 * m1 / (s1 * s1) + m2 * m2 / (s2 * s2))).exp();
+    let got = calculate_foster_collision_probability(d / 1000.0, 7.0, r, s1, s2, 35.0)
+        .collision_probability;
+    assert!(
+        ((got - expected) / expected).abs() < 5e-3,
+        "{got} vs {expected}"
+    );
+}
+
+// Circularizing the covariance must change the answer materially for anisotropic input.
+#[test]
+fn foster_pc_is_not_circularized() {
+    let aniso = calculate_foster_collision_probability(0.2, 7.0, 10.0, 500.0, 20.0, 90.0);
+    let sigma_iso = ((500.0f64 * 500.0 + 20.0 * 20.0) / 2.0).sqrt();
+    let iso = calculate_foster_collision_probability(0.2, 7.0, 10.0, sigma_iso, sigma_iso, 90.0);
+    let ratio = aniso.collision_probability / iso.collision_probability;
+    assert!(ratio > 2.0 || ratio < 0.5, "ratio {ratio}");
 }
 
 #[tokio::test]
@@ -350,7 +381,8 @@ async fn test_sda_api_endpoints_integration() {
         "missDistanceKm": 0.04,
         "relativeVelocityKms": 12.0,
         "hardBodyRadiusM": 15.0,
-        "combinedPositionUncertaintyM": 40.0
+        "sigma1M": 40.0,
+        "sigma2M": 40.0
     });
     let req = Request::builder()
         .method("POST")

@@ -752,6 +752,8 @@ pub struct DopplerQueryParams {
     pub alt_km: Option<f64>,
     /// UTC timestamp for calculation epoch (defaults to current time if omitted)
     pub time: Option<DateTime<Utc>>,
+    /// Use the relativistic Doppler equation with gravitational shift (default: false, classical first-order)
+    pub relativistic: Option<bool>,
 }
 
 /// Get Satellite RF Doppler Shift
@@ -784,10 +786,12 @@ pub async fn get_satellite_doppler(
     let time = params.time.unwrap_or_else(Utc::now);
     let alt_km = params.alt_km.unwrap_or(0.0);
 
+    let relativistic = params.relativistic.unwrap_or(false);
+
     let time_bucket = time.timestamp() / 10;
     let cache_key = format!(
-        "doppler:{}:{:.2}:{:.2}:{:.2}:{:.1}:{}",
-        id, params.center_freq_hz, params.lat, params.lon, alt_km, time_bucket
+        "doppler:{}:{:.2}:{:.2}:{:.2}:{:.1}:{}:{}",
+        id, params.center_freq_hz, params.lat, params.lon, alt_km, time_bucket, relativistic
     );
 
     let res = repo
@@ -802,6 +806,7 @@ pub async fn get_satellite_doppler(
                     params.lon,
                     alt_km,
                     time,
+                    relativistic,
                 )
             })
             .await
@@ -1291,13 +1296,22 @@ pub async fn calculate_collision_probability(
 ) -> Result<Json<CollisionProbabilityResponse>, AppError> {
     claims.require_role(UserRole::Viewer)?;
     let hbr = req.hard_body_radius_m.unwrap_or(10.0);
-    let sigma = req.combined_position_uncertainty_m.unwrap_or(50.0);
+    if !(req.sigma_1_m.is_finite() && req.sigma_2_m.is_finite())
+        || req.sigma_1_m <= 0.0
+        || req.sigma_2_m <= 0.0
+    {
+        return Err(AppError::BadRequest(
+            "sigma1M and sigma2M must be positive finite numbers".to_string(),
+        ));
+    }
 
     let res = astrodynamics::calculate_foster_collision_probability(
         req.miss_distance_km,
         req.relative_velocity_kms,
         hbr,
-        sigma,
+        req.sigma_1_m,
+        req.sigma_2_m,
+        req.miss_angle_deg.unwrap_or(0.0),
     );
 
     Ok(Json(res))

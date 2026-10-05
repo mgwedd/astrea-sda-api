@@ -36,11 +36,26 @@ pub fn julian_date(time: DateTime<Utc>) -> f64 {
     time.timestamp_millis() as f64 / 86_400_000.0 + 2_440_587.5
 }
 
+/// TAI-UTC in seconds (valid since 2017-01-01, no leap second scheduled)
+pub const DELTA_AT_S: f64 = 37.0;
+/// TT-TAI in seconds (exact)
+pub const TT_MINUS_TAI_S: f64 = 32.184;
+/// UT1-UTC in seconds. Taken as 0 (|DUT1| < 0.9 s, <= 0.0038 deg GMST error, ~0.4 km); no IERS feed.
+pub const DUT1_S: f64 = 0.0;
+
+/// Julian Date (TT) for ephemeris evaluation: JD_UTC + (dAT + 32.184 s)/86400
+pub fn julian_date_tt(time: DateTime<Utc>) -> f64 {
+    julian_date(time) + (DELTA_AT_S + TT_MINUS_TAI_S) / 86_400.0
+}
+
+/// Julian Date (UT1) for Earth rotation: JD_UTC + DUT1/86400
+pub fn julian_date_ut1(time: DateTime<Utc>) -> f64 {
+    julian_date(time) + DUT1_S / 86_400.0
+}
+
 /// Computes Local Sidereal Time (Greenwich Mean Sidereal Time + East Longitude) in radians
 pub fn calculate_local_sidereal_time(time: DateTime<Utc>, lon_deg: f64) -> f64 {
-    let jd = julian_date(time);
-
-    let d = jd - 2451545.0;
+    let d = julian_date_ut1(time) - 2451545.0;
     // GMST in degrees
     let gmst_deg = (280.46061837 + 360.98564736629 * d) % 360.0;
     let gmst = if gmst_deg < 0.0 {
@@ -144,6 +159,86 @@ pub fn calculate_look_angles(
     let lst = calculate_local_sidereal_time(time, 0.0);
     let sat_ecf = eci_to_ecf(prediction.position, lst);
     Ok(ecf_to_look_angles(lat, lon, alt / 1000.0, sat_ecf))
+}
+
+/// SGP4 TEME position (km) at a timestamp
+pub fn satellite_position_eci(
+    satellite: &Satellite,
+    time: DateTime<Utc>,
+) -> Result<[f64; 3], AppError> {
+    let line1 = normalize_tle_line(&satellite.tle.line_one, '1');
+    let line2 = normalize_tle_line(&satellite.tle.line_two, '2');
+    let elements = Elements::from_tle(
+        Some(satellite.name.clone()),
+        line1.as_bytes(),
+        line2.as_bytes(),
+    )
+    .map_err(|e| AppError::Sgp4Error(format!("Failed to parse TLE: {:?}", e)))?;
+    let constants = Constants::from_elements(&elements)
+        .map_err(|e| AppError::Sgp4Error(format!("Constants error: {:?}", e)))?;
+    let epoch_dt = DateTime::<Utc>::from_naive_utc_and_offset(elements.datetime, Utc);
+    let minutes = (time - epoch_dt).num_milliseconds() as f64 / 60000.0;
+    constants
+        .propagate(minutes)
+        .map(|p| p.position)
+        .map_err(|e| AppError::Sgp4Error(format!("SGP4 propagation error: {:?}", e)))
+}
+
+/// Lambertian-sphere phase function Phi(gamma) = (sin g + (pi - g) cos g) / pi
+pub fn lambert_sphere_phase_function(gamma_rad: f64) -> f64 {
+    (gamma_rad.sin() + (std::f64::consts::PI - gamma_rad) * gamma_rad.cos()) / std::f64::consts::PI
+}
+
+/// Apparent visual magnitude: M0 + 5 log10(max(rho/1000, 0.1)) - 2.5 log10(max(Phi(gamma), 1e-3)),
+/// with M0 = 2.5 at rho = 1000 km and zero phase angle
+pub fn visual_magnitude(range_km: f64, phase_angle_rad: f64) -> f64 {
+    2.5 + 5.0 * (range_km / 1000.0).max(0.1).log10()
+        - 2.5
+            * lambert_sphere_phase_function(phase_angle_rad)
+                .max(1e-3)
+                .log10()
+}
+
+/// Phase angle (Sun-satellite-observer) in radians, all vectors in TEME
+pub fn phase_angle_rad(sat_eci: [f64; 3], obs_eci: [f64; 3], sun_eci: [f64; 3]) -> f64 {
+    let a = [
+        sun_eci[0] - sat_eci[0],
+        sun_eci[1] - sat_eci[1],
+        sun_eci[2] - sat_eci[2],
+    ];
+    let b = [
+        obs_eci[0] - sat_eci[0],
+        obs_eci[1] - sat_eci[1],
+        obs_eci[2] - sat_eci[2],
+    ];
+    let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let na = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+    let nb = (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]).sqrt();
+    (dot / (na * nb)).clamp(-1.0, 1.0).acos()
+}
+
+/// Observer position in TEME (km): WGS-84 geodetic to ECEF, rotated by -GMST
+pub fn observer_position_eci(
+    lat_deg: f64,
+    lon_deg: f64,
+    alt_km: f64,
+    time: DateTime<Utc>,
+) -> [f64; 3] {
+    let lat = lat_deg.to_radians();
+    let lon = lon_deg.to_radians();
+    let n = WGS84_A_KM / (1.0 - WGS84_E2 * lat.sin() * lat.sin()).sqrt();
+    let ecf = [
+        (n + alt_km) * lat.cos() * lon.cos(),
+        (n + alt_km) * lat.cos() * lon.sin(),
+        (n * (1.0 - WGS84_E2) + alt_km) * lat.sin(),
+    ];
+    let gmst = calculate_local_sidereal_time(time, 0.0);
+    // Inverse of eci_to_ecf: rotate by -GMST
+    [
+        ecf[0] * gmst.cos() - ecf[1] * gmst.sin(),
+        ecf[0] * gmst.sin() + ecf[1] * gmst.cos(),
+        ecf[2],
+    ]
 }
 
 /// Multi-threaded batch evaluation of all satellites using **Rayon** (`par_iter()`)
@@ -298,9 +393,27 @@ pub fn eci_to_ecf_velocity(eci_pos: [f64; 3], eci_vel: [f64; 3], lst_rad: f64) -
     [vx_ecf, vy_ecf, vz_ecf]
 }
 
-/// Computes the sub-satellite footprint coverage circle radius on Earth in km
-pub fn calculate_footprint_radius(alt_km: f64) -> f64 {
-    let re = 6378.137;
+const WGS84_A_KM: f64 = 6378.137;
+const WGS84_B_KM: f64 = 6_356.752_314_2;
+const WGS84_E2: f64 = 1.0 - (WGS84_B_KM * WGS84_B_KM) / (WGS84_A_KM * WGS84_A_KM);
+
+/// WGS-84 geocentric radius (km) at a geocentric latitude in radians
+pub fn earth_radius_at_geocentric_lat_km(phi_gc_rad: f64) -> f64 {
+    let (s, c) = phi_gc_rad.sin_cos();
+    WGS84_A_KM * WGS84_B_KM
+        / (WGS84_B_KM * WGS84_B_KM * c * c + WGS84_A_KM * WGS84_A_KM * s * s).sqrt()
+}
+
+/// WGS-84 geocentric radius (km) at a geodetic latitude in degrees
+pub fn local_earth_radius_km(lat_deg: f64) -> f64 {
+    let phi_gc = ((1.0 - WGS84_E2) * lat_deg.to_radians().tan()).atan();
+    earth_radius_at_geocentric_lat_km(phi_gc)
+}
+
+/// Computes the sub-satellite footprint coverage circle radius on Earth in km,
+/// using the local geocentric radius at the sub-satellite geodetic latitude
+pub fn calculate_footprint_radius(alt_km: f64, lat_deg: f64) -> f64 {
+    let re = local_earth_radius_km(lat_deg);
     let safe_alt = alt_km.max(0.0);
     let cos_val = (re / (re + safe_alt)).clamp(-1.0, 1.0);
     re * cos_val.acos()
@@ -312,8 +425,7 @@ pub fn generate_footprint_polygon_coords(
     lon_deg: f64,
     radius_km: f64,
 ) -> Vec<Vec<[f64; 3]>> {
-    let re = 6378.137;
-    let ang_dist = radius_km / re;
+    let ang_dist = radius_km / local_earth_radius_km(lat_deg);
     let lat0 = lat_deg.to_radians();
     let lon0 = lon_deg.to_radians();
 
@@ -342,7 +454,9 @@ pub fn generate_footprint_polygon_coords(
 /// True when the footprint ring neither encloses a pole nor crosses the anti-meridian,
 /// i.e. when a single unsplit GeoJSON Polygon ring represents it correctly.
 pub fn footprint_ring_is_simple(lat_deg: f64, lon_deg: f64, radius_km: f64) -> bool {
-    let ang_deg = (radius_km / 6378.137).to_degrees();
+    let ang_deg = (radius_km / local_earth_radius_km(lat_deg)).to_degrees();
+    // Polar guard first: |phi0| + sigma >= 90 deg means the cap contains a pole, so the
+    // longitude half-width division below is never evaluated.
     if lat_deg.abs() + ang_deg >= 90.0 {
         return false;
     }
@@ -511,7 +625,7 @@ pub fn generate_ground_track(
     // Footprint is instantaneous: evaluated at the first trajectory point.
     let footprint_radius_km = trajectory
         .first()
-        .map_or(0.0, |p| calculate_footprint_radius(p.alt_km));
+        .map_or(0.0, |p| calculate_footprint_radius(p.alt_km, p.lat));
 
     let (geojson, footprint_polygon) = if include_geojson {
         let geometry = build_anti_meridian_geojson_geometry(&geojson_coords);
@@ -577,17 +691,15 @@ pub fn generate_ground_track(
 
 /// Computes low-precision Sun ECI position vector [x, y, z] in km
 pub fn calculate_sun_position_eci(time: DateTime<Utc>) -> [f64; 3] {
-    let jd = julian_date(time);
+    let d = julian_date_tt(time) - 2451545.0;
 
-    let d = jd - 2451545.0;
-
-    let l_deg = (280.460 + 0.9856474 * d) % 360.0;
-    let g_deg = ((357.528 + 0.9856003 * d) % 360.0).to_radians();
+    let l_deg = (280.459 + 0.98564736 * d) % 360.0;
+    let g_deg = ((357.529 + 0.98560028 * d) % 360.0).to_radians();
 
     let lambda_deg = l_deg + 1.915 * g_deg.sin() + 0.020 * (2.0 * g_deg).sin();
     let lambda_rad = lambda_deg.to_radians();
 
-    let eps_deg = 23.439 - 0.0000004 * d;
+    let eps_deg = 23.439 - 0.00000036 * d;
     let eps_rad = eps_deg.to_radians();
 
     let r_au = 1.00014 - 0.01671 * g_deg.cos() - 0.00014 * (2.0 * g_deg).cos();
@@ -631,11 +743,12 @@ pub fn calculate_illumination(
     let sat_eci = prediction.position;
     let sun_eci = calculate_sun_position_eci(time);
 
-    let re_km = 6378.137;
     let rs_km = 696_340.0;
 
     let r_sat_mag =
         (sat_eci[0] * sat_eci[0] + sat_eci[1] * sat_eci[1] + sat_eci[2] * sat_eci[2]).sqrt();
+    // Oblate Earth: local radius at the satellite's geocentric latitude
+    let re_km = earth_radius_at_geocentric_lat_km((sat_eci[2] / r_sat_mag).asin());
     let d_vec = [
         sun_eci[0] - sat_eci[0],
         sun_eci[1] - sat_eci[1],
@@ -691,22 +804,56 @@ pub fn calculate_illumination(
     })
 }
 
-/// Computes Foster 2D encounter-plane collision probability (Pc)
+/// Foster 2D collision probability for a Gaussian encounter-plane covariance given by its
+/// principal axes. Integrates the density over the hard-body disk with the erf reduction of
+/// spec 10.5 (substitution u1 = R sin(t) removes the endpoint singularity; Simpson in t).
+/// All lengths in metres; (m1, m2) is the miss vector in the principal-axis frame.
+pub fn foster_pc_principal_axes(r_hbr: f64, sigma_1: f64, sigma_2: f64, m1: f64, m2: f64) -> f64 {
+    const STEPS: usize = 20_000; // even
+    let s2 = sigma_2 * std::f64::consts::SQRT_2;
+    let m2 = m2.abs();
+    let integrand = |t: f64| {
+        let (sin_t, cos_t) = t.sin_cos();
+        let u1 = r_hbr * sin_t;
+        let w = r_hbr * cos_t;
+        let g = (-(u1 - m1).powi(2) / (2.0 * sigma_1 * sigma_1)).exp()
+            / (sigma_1 * (2.0 * std::f64::consts::PI).sqrt());
+        // 0.5 [erf((w - m2)/s2) - erf((-w - m2)/s2)], rewritten with erfc to avoid cancellation
+        let band = 0.5 * (libm::erfc((m2 - w) / s2) - libm::erfc((m2 + w) / s2));
+        g * band * r_hbr * cos_t
+    };
+    let (lo, hi) = (-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2);
+    let h = (hi - lo) / STEPS as f64;
+    let mut sum = integrand(lo) + integrand(hi);
+    for k in 1..STEPS {
+        let w = if k % 2 == 1 { 4.0 } else { 2.0 };
+        sum += w * integrand(lo + k as f64 * h);
+    }
+    (sum * h / 3.0).clamp(0.0, 1.0)
+}
+
+/// Computes Foster 2D encounter-plane collision probability (Pc) from principal-axis
+/// 1-sigma uncertainties (sigma_1_m, sigma_2_m) of the combined encounter-plane covariance.
+/// `miss_angle_deg` is the angle of the miss vector from the sigma_1 axis.
+/// The covariance is never circularized (spec 10.5).
 pub fn calculate_foster_collision_probability(
     miss_distance_km: f64,
     relative_velocity_kms: f64,
     hard_body_radius_m: f64,
-    combined_uncertainty_m: f64,
+    sigma_1_m: f64,
+    sigma_2_m: f64,
+    miss_angle_deg: f64,
 ) -> CollisionProbabilityResponse {
     let d_m = (miss_distance_km * 1000.0).max(0.0);
     let r_hbr = hard_body_radius_m.max(0.1);
-    let sigma = combined_uncertainty_m.max(1.0);
-
-    // Foster 2D / Akella-Alfriend encounter plane approximation:
-    // Pc = exp(-d^2 / (2 * sigma^2)) * (1 - exp(-r_hbr^2 / (2 * sigma^2)))
-    let exp_miss = (-d_m * d_m / (2.0 * sigma * sigma)).exp();
-    let collision_disk = 1.0 - (-r_hbr * r_hbr / (2.0 * sigma * sigma)).exp();
-    let pc = (exp_miss * collision_disk).clamp(0.0, 1.0);
+    let alpha = miss_angle_deg.to_radians();
+    let pc = foster_pc_principal_axes(
+        r_hbr,
+        sigma_1_m,
+        sigma_2_m,
+        d_m * alpha.cos(),
+        d_m * alpha.sin(),
+    );
 
     let (risk_category, recommendation) = if pc >= 1e-4 {
         (
@@ -734,7 +881,9 @@ pub fn calculate_foster_collision_probability(
         miss_distance_km,
         relative_velocity_kms,
         hard_body_radius_m: r_hbr,
-        combined_uncertainty_m: sigma,
+        sigma_1_m,
+        sigma_2_m,
+        miss_angle_deg,
         collision_probability: pc,
         risk_category,
         recommendation,
@@ -874,8 +1023,6 @@ pub fn find_conjunctions(
             }
 
             if min_dist_km <= max_distance_km {
-                let pc_calc =
-                    calculate_foster_collision_probability(min_dist_km, rel_vel_kms, 10.0, 50.0);
                 Some(ConjunctionMatch {
                     satellite_a: SatelliteSummary {
                         id: sat_a.id,
@@ -888,8 +1035,9 @@ pub fn find_conjunctions(
                     closest_approach_time: closest_time,
                     min_distance_km: min_dist_km,
                     relative_velocity_kms: rel_vel_kms,
-                    collision_probability: Some(pc_calc.collision_probability),
-                    risk_category: Some(pc_calc.risk_category),
+                    // No covariance is available from TLEs, so no Pc is reported here.
+                    collision_probability: None,
+                    risk_category: None,
                 })
             } else {
                 None
@@ -912,6 +1060,22 @@ pub fn find_conjunctions(
     }
 }
 
+/// Relativistic received frequency (spec 8.2): transverse Doppler, line-of-sight term and
+/// gravitational blue shift for an observer at rest in ECEF. Speeds in km/s, radii in km.
+pub fn relativistic_received_freq_hz(
+    f0_hz: f64,
+    range_rate_kms: f64,
+    sat_speed_kms: f64,
+    r_obs_km: f64,
+    r_sat_km: f64,
+) -> f64 {
+    const C_KMS: f64 = 299_792.458;
+    const MU_KM3_S2: f64 = 398_600.441_8;
+    let beta = sat_speed_kms / C_KMS;
+    let grav = MU_KM3_S2 / (C_KMS * C_KMS) * (1.0 / r_obs_km - 1.0 / r_sat_km);
+    f0_hz * (1.0 - beta * beta).sqrt() / (1.0 + range_rate_kms / C_KMS) * (1.0 + grav)
+}
+
 /// Computes range rate (km/s) and real-time RF Doppler frequency shift (Hz) for a ground observer
 pub fn calculate_doppler_shift(
     satellite: &Satellite,
@@ -920,6 +1084,7 @@ pub fn calculate_doppler_shift(
     lon: f64,
     alt_km: f64,
     time: DateTime<Utc>,
+    relativistic: bool,
 ) -> Result<DopplerResponse, AppError> {
     let line1 = normalize_tle_line(&satellite.tle.line_one, '1');
     let line2 = normalize_tle_line(&satellite.tle.line_two, '2');
@@ -974,8 +1139,16 @@ pub fn calculate_doppler_shift(
 
     // Speed of light in km/s
     let c_kms = 299_792.458;
-    let doppler_shift_hz = -center_freq_hz * (range_rate_kms / c_kms);
-    let corrected_freq_hz = center_freq_hz + doppler_shift_hz;
+    let corrected_freq_hz = if relativistic {
+        let v_sat =
+            (sat_vel_ecf[0].powi(2) + sat_vel_ecf[1].powi(2) + sat_vel_ecf[2].powi(2)).sqrt();
+        let r_sat = (sat_ecf[0].powi(2) + sat_ecf[1].powi(2) + sat_ecf[2].powi(2)).sqrt();
+        let r_obs = (obs_x * obs_x + obs_y * obs_y + obs_z * obs_z).sqrt();
+        relativistic_received_freq_hz(center_freq_hz, range_rate_kms, v_sat, r_obs, r_sat)
+    } else {
+        center_freq_hz - center_freq_hz * (range_rate_kms / c_kms)
+    };
+    let doppler_shift_hz = corrected_freq_hz - center_freq_hz;
 
     let signal_direction = if range_rate_kms < -1e-5 {
         "Approaching (Blue Shift)".to_string()
@@ -998,8 +1171,7 @@ pub fn calculate_doppler_shift(
 
 /// Computes low-precision geocentric Moon position vector [X, Y, Z] in ECI (km) using Meeus Chapter 47 algorithm
 pub fn calculate_lunar_position_eci(time: DateTime<Utc>) -> [f64; 3] {
-    let jd = julian_date(time);
-    let d = jd - 2451545.0;
+    let d = julian_date_tt(time) - 2451545.0;
 
     // Mean longitude of the Moon in degrees
     let l_prime = (218.316 + 13.176396 * d) % 360.0;
@@ -1269,7 +1441,13 @@ pub fn find_pass_schedule(
             };
 
             let visual_magnitude = if is_visible {
-                let mag = 2.5 + 5.0 * (tca_look.range_km / 1000.0).max(0.1).log10();
+                let sat_eci = satellite_position_eci(satellite, tca_time)?;
+                let gamma = phase_angle_rad(
+                    sat_eci,
+                    observer_position_eci(lat, lon, alt_m / 1000.0, tca_time),
+                    calculate_sun_position_eci(tca_time),
+                );
+                let mag = visual_magnitude(tca_look.range_km, gamma);
                 Some((mag * 10.0).round() / 10.0)
             } else {
                 None
@@ -1493,6 +1671,143 @@ pub fn calculate_relative_motion(
     })
 }
 
+/// Brouwer mean semi-major axis a0'' (km) recovered from the TLE Kozai mean motion with the
+/// SGP4 initialization (Spacetrack Report #3) and WGS-72 constants.
+pub fn brouwer_mean_semi_major_axis_km(elements: &Elements) -> f64 {
+    let g = &sgp4::WGS72;
+    let n_o = elements.mean_motion * 2.0 * std::f64::consts::PI / 1440.0; // rad/min
+    let e = elements.eccentricity;
+    let k2 = 0.5 * g.j2;
+    let cos_i = elements.inclination.to_radians().cos();
+    let shape = (3.0 * cos_i * cos_i - 1.0) / (1.0 - e * e).powf(1.5);
+
+    let a1 = (g.ke / n_o).powf(2.0 / 3.0);
+    let d1 = 1.5 * k2 / (a1 * a1) * shape;
+    let a0 = a1 * (1.0 - d1 / 3.0 - d1 * d1 - 134.0 / 81.0 * d1 * d1 * d1);
+    let d0 = 1.5 * k2 / (a0 * a0) * shape;
+    a0 / (1.0 - d0) * g.ae
+}
+
+/// Osculating classical elements from a TEME state (km, km/s). Angles of circular and
+/// equatorial orbits are folded per spec 7.6 so position stays recoverable.
+#[derive(Debug, Clone, Copy)]
+pub struct OsculatingElements {
+    pub semi_major_axis_km: f64,
+    pub eccentricity: f64,
+    pub inclination_deg: f64,
+    pub raan_deg: f64,
+    pub arg_of_perigee_deg: f64,
+    pub true_anomaly_deg: f64,
+    pub mean_anomaly_deg: f64,
+}
+
+pub fn osculating_elements(pos_eci: [f64; 3], vel_eci: [f64; 3]) -> OsculatingElements {
+    let mu = 398_600.441_8; // Earth gravitational parameter km^3 / s^2
+
+    let r = (pos_eci[0] * pos_eci[0] + pos_eci[1] * pos_eci[1] + pos_eci[2] * pos_eci[2]).sqrt();
+    let v = (vel_eci[0] * vel_eci[0] + vel_eci[1] * vel_eci[1] + vel_eci[2] * vel_eci[2]).sqrt();
+
+    // Specific angular momentum h = r x v
+    let h_vec = [
+        pos_eci[1] * vel_eci[2] - pos_eci[2] * vel_eci[1],
+        pos_eci[2] * vel_eci[0] - pos_eci[0] * vel_eci[2],
+        pos_eci[0] * vel_eci[1] - pos_eci[1] * vel_eci[0],
+    ];
+    let h = (h_vec[0] * h_vec[0] + h_vec[1] * h_vec[1] + h_vec[2] * h_vec[2]).sqrt();
+
+    // Specific orbital energy
+    let energy = (v * v) / 2.0 - mu / r;
+    let semi_major_axis_km = -mu / (2.0 * energy);
+
+    // Eccentricity vector e = ((v^2 - mu/r)*r - (r.v)*v) / mu
+    let r_dot_v = pos_eci[0] * vel_eci[0] + pos_eci[1] * vel_eci[1] + pos_eci[2] * vel_eci[2];
+    let e_vec = [
+        ((v * v - mu / r) * pos_eci[0] - r_dot_v * vel_eci[0]) / mu,
+        ((v * v - mu / r) * pos_eci[1] - r_dot_v * vel_eci[1]) / mu,
+        ((v * v - mu / r) * pos_eci[2] - r_dot_v * vel_eci[2]) / mu,
+    ];
+    let eccentricity = (e_vec[0] * e_vec[0] + e_vec[1] * e_vec[1] + e_vec[2] * e_vec[2]).sqrt();
+
+    let inclination_deg = (h_vec[2] / h).clamp(-1.0, 1.0).acos().to_degrees();
+
+    // Line of nodes n = z_unit x h = [-h_y, h_x, 0]
+    let n_vec = [-h_vec[1], h_vec[0], 0.0];
+    let n_mag = (n_vec[0] * n_vec[0] + n_vec[1] * n_vec[1]).sqrt();
+
+    // Non-singular angle handling (spec 7.6): fold the undefined angle into the defined one
+    // so that position along the orbit is preserved.
+    let circular = eccentricity < 1e-6;
+    let equatorial = n_mag / h < 1e-8;
+    let retrograde = h_vec[2] < 0.0;
+    let wrap = |deg: f64| deg.rem_euclid(360.0);
+
+    let raan_deg = if equatorial {
+        0.0
+    } else {
+        let mut raan = (n_vec[0] / n_mag).clamp(-1.0, 1.0).acos().to_degrees();
+        if n_vec[1] < 0.0 {
+            raan = 360.0 - raan;
+        }
+        raan
+    };
+
+    let (arg_of_perigee_deg, true_anomaly_deg) = if circular && equatorial {
+        // true longitude l = atan2(r_y, r_x), flipped for retrograde
+        let l = pos_eci[1].atan2(pos_eci[0]).to_degrees();
+        (0.0, wrap(if retrograde { -l } else { l }))
+    } else if circular {
+        // argument of latitude u
+        let dot = (n_vec[0] * pos_eci[0] + n_vec[1] * pos_eci[1]) / (n_mag * r);
+        let mut u = dot.clamp(-1.0, 1.0).acos().to_degrees();
+        if pos_eci[2] < 0.0 {
+            u = 360.0 - u;
+        }
+        (0.0, u)
+    } else {
+        let omega = if equatorial {
+            // longitude of periapsis varpi = atan2(e_y, e_x), flipped for retrograde
+            let w = e_vec[1].atan2(e_vec[0]).to_degrees();
+            wrap(if retrograde { -w } else { w })
+        } else {
+            let dot = (n_vec[0] * e_vec[0] + n_vec[1] * e_vec[1]) / (n_mag * eccentricity);
+            let mut arg = dot.clamp(-1.0, 1.0).acos().to_degrees();
+            if e_vec[2] < 0.0 {
+                arg = 360.0 - arg;
+            }
+            arg
+        };
+        let dot = (e_vec[0] * pos_eci[0] + e_vec[1] * pos_eci[1] + e_vec[2] * pos_eci[2])
+            / (eccentricity * r);
+        let mut nu = dot.clamp(-1.0, 1.0).acos().to_degrees();
+        if r_dot_v < 0.0 {
+            nu = 360.0 - nu;
+        }
+        (omega, nu)
+    };
+
+    // Mean anomaly from true anomaly via eccentric anomaly E
+    let nu_rad = true_anomaly_deg.to_radians();
+    let cos_e = (eccentricity + nu_rad.cos()) / (1.0 + eccentricity * nu_rad.cos());
+    let sin_e = ((1.0 - eccentricity * eccentricity).max(0.0).sqrt() * nu_rad.sin())
+        / (1.0 + eccentricity * nu_rad.cos());
+    let e_anom_rad = sin_e.atan2(cos_e);
+    let mean_anom_rad = e_anom_rad - eccentricity * e_anom_rad.sin();
+    let mut mean_anomaly_deg = mean_anom_rad.to_degrees() % 360.0;
+    if mean_anomaly_deg < 0.0 {
+        mean_anomaly_deg += 360.0;
+    }
+
+    OsculatingElements {
+        semi_major_axis_km,
+        eccentricity,
+        inclination_deg,
+        raan_deg,
+        arg_of_perigee_deg,
+        true_anomaly_deg,
+        mean_anomaly_deg,
+    }
+}
+
 /// Computes state vector (ECI, ECEF, Geodetic) and osculating Keplerian orbital elements
 pub fn calculate_satellite_state(
     satellite: &Satellite,
@@ -1527,84 +1842,17 @@ pub fn calculate_satellite_state(
 
     let (latitude_deg, longitude_deg, altitude_km) = ecf_to_geodetic(pos_ecef);
 
-    // Compute osculating Keplerian orbital elements
     let mu = 398_600.441_8; // Earth gravitational parameter km^3 / s^2
     let re = 6378.137; // WGS-84 radius km
-
-    let r = (pos_eci[0] * pos_eci[0] + pos_eci[1] * pos_eci[1] + pos_eci[2] * pos_eci[2]).sqrt();
-    let v = (vel_eci[0] * vel_eci[0] + vel_eci[1] * vel_eci[1] + vel_eci[2] * vel_eci[2]).sqrt();
-
-    // Specific angular momentum h = r x v
-    let h_vec = [
-        pos_eci[1] * vel_eci[2] - pos_eci[2] * vel_eci[1],
-        pos_eci[2] * vel_eci[0] - pos_eci[0] * vel_eci[2],
-        pos_eci[0] * vel_eci[1] - pos_eci[1] * vel_eci[0],
-    ];
-    let h = (h_vec[0] * h_vec[0] + h_vec[1] * h_vec[1] + h_vec[2] * h_vec[2]).sqrt();
-
-    // Specific orbital energy
-    let energy = (v * v) / 2.0 - mu / r;
-    let semi_major_axis_km = -mu / (2.0 * energy);
-
-    // Eccentricity vector e = ((v^2 - mu/r)*r - (r.v)*v) / mu
-    let r_dot_v = pos_eci[0] * vel_eci[0] + pos_eci[1] * vel_eci[1] + pos_eci[2] * vel_eci[2];
-    let e_vec = [
-        ((v * v - mu / r) * pos_eci[0] - r_dot_v * vel_eci[0]) / mu,
-        ((v * v - mu / r) * pos_eci[1] - r_dot_v * vel_eci[1]) / mu,
-        ((v * v - mu / r) * pos_eci[2] - r_dot_v * vel_eci[2]) / mu,
-    ];
-    let eccentricity = (e_vec[0] * e_vec[0] + e_vec[1] * e_vec[1] + e_vec[2] * e_vec[2]).sqrt();
-
-    let inclination_deg = (h_vec[2] / h).clamp(-1.0, 1.0).acos().to_degrees();
-
-    // Line of nodes n = z_unit x h = [-h_y, h_x, 0]
-    let n_vec = [-h_vec[1], h_vec[0], 0.0];
-    let n_mag = (n_vec[0] * n_vec[0] + n_vec[1] * n_vec[1]).sqrt();
-
-    let raan_deg = if n_mag > 1e-8 {
-        let mut raan = (n_vec[0] / n_mag).clamp(-1.0, 1.0).acos().to_degrees();
-        if n_vec[1] < 0.0 {
-            raan = 360.0 - raan;
-        }
-        raan
-    } else {
-        0.0
-    };
-
-    let arg_of_perigee_deg = if n_mag > 1e-8 && eccentricity > 1e-6 {
-        let dot = (n_vec[0] * e_vec[0] + n_vec[1] * e_vec[1]) / (n_mag * eccentricity);
-        let mut arg = dot.clamp(-1.0, 1.0).acos().to_degrees();
-        if e_vec[2] < 0.0 {
-            arg = 360.0 - arg;
-        }
-        arg
-    } else {
-        0.0
-    };
-
-    let true_anomaly_deg = if eccentricity > 1e-6 {
-        let dot = (e_vec[0] * pos_eci[0] + e_vec[1] * pos_eci[1] + e_vec[2] * pos_eci[2])
-            / (eccentricity * r);
-        let mut nu = dot.clamp(-1.0, 1.0).acos().to_degrees();
-        if r_dot_v < 0.0 {
-            nu = 360.0 - nu;
-        }
-        nu
-    } else {
-        0.0
-    };
-
-    // Mean anomaly from true anomaly via eccentric anomaly E
-    let nu_rad = true_anomaly_deg.to_radians();
-    let cos_e = (eccentricity + nu_rad.cos()) / (1.0 + eccentricity * nu_rad.cos());
-    let sin_e = ((1.0 - eccentricity * eccentricity).max(0.0).sqrt() * nu_rad.sin())
-        / (1.0 + eccentricity * nu_rad.cos());
-    let e_anom_rad = sin_e.atan2(cos_e);
-    let mean_anom_rad = e_anom_rad - eccentricity * e_anom_rad.sin();
-    let mut mean_anomaly_deg = mean_anom_rad.to_degrees() % 360.0;
-    if mean_anomaly_deg < 0.0 {
-        mean_anomaly_deg += 360.0;
-    }
+    let OsculatingElements {
+        semi_major_axis_km,
+        eccentricity,
+        inclination_deg,
+        raan_deg,
+        arg_of_perigee_deg,
+        true_anomaly_deg,
+        mean_anomaly_deg,
+    } = osculating_elements(pos_eci, vel_eci);
 
     let orbital_period_minutes =
         (2.0 * std::f64::consts::PI * (semi_major_axis_km.powi(3) / mu).sqrt()) / 60.0;
@@ -1649,10 +1897,8 @@ pub fn calculate_decay_risk(satellite: &Satellite) -> Result<SatelliteDecayRiskR
     )
     .map_err(|e| AppError::Sgp4Error(format!("Failed to parse TLE: {:?}", e)))?;
 
-    let mu = 398_600.441_8;
     let re = 6378.137;
-    let n_rad_s = elements.mean_motion * 2.0 * std::f64::consts::PI / 86400.0;
-    let semi_major_axis = (mu / (n_rad_s * n_rad_s)).cbrt();
+    let semi_major_axis = brouwer_mean_semi_major_axis_km(&elements);
 
     let ecc = elements.eccentricity;
     let perigee_altitude_km = semi_major_axis * (1.0 - ecc) - re;
@@ -1660,39 +1906,31 @@ pub fn calculate_decay_risk(satellite: &Satellite) -> Result<SatelliteDecayRiskR
     let bstar = elements.drag_term;
     let mean_motion_derivative = elements.mean_motion_dot * 2.0;
 
-    let (decay_status, lifetime_days, risk_score) = if perigee_altitude_km < 150.0 {
-        let life =
-            (perigee_altitude_km - 80.0).max(0.1) / (15.0 + (bstar.abs() * 50000.0).min(50.0));
+    // Regime and score depend on perigee altitude only. B* is an SGP4 fit parameter, not a
+    // ballistic coefficient, so no lifetime is estimated from a TLE alone (spec 9.2).
+    let (decay_status, risk_score) = if perigee_altitude_km < 150.0 {
         (
             "Critical Re-entry Imminent (< 48 hrs)".to_string(),
-            Some((life * 10.0).round() / 10.0),
             (100.0 - (perigee_altitude_km - 100.0).clamp(0.0, 50.0) * 0.1).clamp(0.0, 100.0),
         )
     } else if perigee_altitude_km < 200.0 {
-        let life = 2.0 + (perigee_altitude_km - 150.0) * 0.24 / (1.0 + bstar.abs() * 500.0);
         (
             "High Risk / Imminent Re-entry (< 2 weeks)".to_string(),
-            Some((life * 10.0).round() / 10.0),
             (85.0 + (200.0 - perigee_altitude_km) * 0.3).clamp(0.0, 100.0),
         )
     } else if perigee_altitude_km < 300.0 {
-        let life = 14.0 + (perigee_altitude_km - 200.0) * 1.5 / (1.0 + bstar.abs() * 200.0);
         (
             "Moderate Risk / Active Orbital Decay".to_string(),
-            Some((life * 10.0).round() / 10.0),
             (50.0 + (300.0 - perigee_altitude_km) * 0.35).clamp(0.0, 100.0),
         )
     } else if perigee_altitude_km < 500.0 {
-        let life = 180.0 + (perigee_altitude_km - 300.0) * 8.0 / (1.0 + bstar.abs() * 100.0);
         (
             "Low Risk / Long-Term LEO Decay".to_string(),
-            Some((life * 10.0).round() / 10.0),
             (10.0 + (500.0 - perigee_altitude_km) * 0.2).clamp(0.0, 100.0),
         )
     } else {
         (
             "Stable Orbit / Negligible Drag".to_string(),
-            None,
             ((600.0 - perigee_altitude_km).max(0.0) * 0.05).clamp(0.0, 9.9),
         )
     };
@@ -1704,7 +1942,7 @@ pub fn calculate_decay_risk(satellite: &Satellite) -> Result<SatelliteDecayRiskR
         apogee_altitude_km: (apogee_altitude_km * 10.0).round() / 10.0,
         bstar_drag: bstar,
         mean_motion_derivative_rev_day2: mean_motion_derivative,
-        orbital_lifetime_days_estimate: lifetime_days,
+        orbital_lifetime_days_estimate: None,
         decay_status,
         reentry_risk_score: (risk_score * 10.0).round() / 10.0,
     })

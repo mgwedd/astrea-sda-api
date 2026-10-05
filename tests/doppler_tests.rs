@@ -29,8 +29,16 @@ fn test_doppler_shift_calculation_approaching_and_receding() {
     let alt_km = 0.0;
     let epoch = Utc.with_ymd_and_hms(2024, 3, 20, 12, 0, 0).unwrap();
 
-    let res = astrodynamics::calculate_doppler_shift(&sat, center_freq_hz, lat, lon, alt_km, epoch)
-        .expect("Doppler calculation failed");
+    let res = astrodynamics::calculate_doppler_shift(
+        &sat,
+        center_freq_hz,
+        lat,
+        lon,
+        alt_km,
+        epoch,
+        false,
+    )
+    .expect("Doppler calculation failed");
 
     assert_eq!(res.satellite_id, sat.id);
     assert_eq!(res.satellite_name, "ISS (ZARYA)");
