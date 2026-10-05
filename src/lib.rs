@@ -64,6 +64,8 @@ impl Modify for SecurityAddon {
         handlers::satellite_handler::get_lunar_transits,
         handlers::satellite_handler::search_conjunctions,
         handlers::satellite_handler::calculate_collision_probability,
+        handlers::satellite_handler::transform_elements,
+        handlers::satellite_handler::transform_frames,
     ),
     components(
         schemas(
@@ -111,6 +113,18 @@ impl Modify for SecurityAddon {
             models::ConjunctionSearchResponse,
             models::ConjunctionMatch,
             models::SatelliteSummary,
+            models::CoordinateFrame,
+            models::CartesianState,
+            models::ClassicalKeplerianElements,
+            models::ModifiedEquinoctialElements,
+            models::KeplerianInput,
+            models::EquinoctialInput,
+            models::ElementTransformRequest,
+            models::ElementTransformResponse,
+            models::GeodeticCoordinates,
+            models::LookAnglesDetail,
+            models::FrameTransformRequest,
+            models::FrameTransformResponse,
             handlers::satellite_handler::PipelineSyncResponse,
             handlers::satellite_handler::PipelineGroupSyncDetail,
             pagination::PaginationMeta,
@@ -180,6 +194,14 @@ pub fn create_router_with_auth_and_limiter(
         .route(
             "/conjunctions/collision-probability",
             post(handlers::calculate_collision_probability),
+        )
+        .route(
+            "/satellites/transforms/elements",
+            post(handlers::transform_elements),
+        )
+        .route(
+            "/satellites/transforms/frames",
+            post(handlers::transform_frames),
         )
         .route(
             "/satellites/:id/next-visible",
