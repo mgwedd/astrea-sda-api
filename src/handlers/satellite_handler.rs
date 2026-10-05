@@ -13,7 +13,7 @@ use crate::models::{
 use crate::pagination::{PaginatedResponse, PaginationQuery};
 use crate::repository::SatelliteRepository;
 use crate::services::pipeline::{CelesTrakGroup, DiscoveryPipeline};
-use crate::services::{astrodynamics, maneuver};
+use crate::services::{astrodynamics, czml, maneuver};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -64,6 +64,8 @@ pub struct PassScheduleQueryParams {
     pub visible_only: Option<bool>,
     /// UTC timestamp to start pass schedule forecast from (defaults to current time if omitted)
     pub start_time: Option<DateTime<Utc>>,
+    /// Output format: 'json' (default) or 'czml' (adds a `czml` document with one entity per pass)
+    pub format: Option<String>,
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -98,7 +100,7 @@ pub struct GroundTrackQueryParams {
     pub duration_minutes: Option<usize>,
     /// Step sampling interval in seconds (default: 30 secs, max: 300)
     pub step_seconds: Option<usize>,
-    /// Output format ('geojson' or 'json', default: 'geojson')
+    /// Output format: 'geojson' (default), 'json', 'czml' or 'all' (geojson + czml)
     pub format: Option<String>,
     /// UTC timestamp to start projection from (defaults to current time if omitted)
     pub start_time: Option<DateTime<Utc>>,
@@ -1035,9 +1037,13 @@ pub async fn get_satellite_passes(
     let threshold = params.threshold_deg.unwrap_or(5.0);
     let days = params.duration_days.unwrap_or(3).clamp(1, 14);
     let visible_only = params.visible_only.unwrap_or(false);
+    let include_czml = params
+        .format
+        .as_deref()
+        .is_some_and(|f| f.eq_ignore_ascii_case("czml"));
 
     let cache_key = format!(
-        "passes:{}:{}:{}:{}:{}:{}:{}:{}",
+        "passes:{}:{}:{}:{}:{}:{}:{}:{}:{}",
         id,
         params.lat,
         params.lon,
@@ -1045,6 +1051,7 @@ pub async fn get_satellite_passes(
         threshold,
         days,
         visible_only,
+        include_czml,
         start_time.timestamp_millis()
     );
 
@@ -1053,7 +1060,7 @@ pub async fn get_satellite_passes(
         .get_or_insert_with(&cache_key, || async move {
             let sat_clone = satellite.clone();
             let pass_res = tokio::task::spawn_blocking(move || {
-                astrodynamics::find_pass_schedule(
+                let mut res = astrodynamics::find_pass_schedule(
                     &sat_clone,
                     params.lat,
                     params.lon,
@@ -1062,7 +1069,11 @@ pub async fn get_satellite_passes(
                     threshold,
                     days,
                     visible_only,
-                )
+                )?;
+                if include_czml {
+                    res.czml = Some(czml::passes_document(&sat_clone, &res.passes)?);
+                }
+                Ok::<_, AppError>(res)
             })
             .await
             .map_err(|e| e.to_string())?;

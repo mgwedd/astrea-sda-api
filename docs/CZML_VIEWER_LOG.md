@@ -1,0 +1,85 @@
+# Issue #65 — View client: risks, open questions, build log
+
+Living document. Rules: every claim is tagged **VERIFIED** (checked against code/tests this session, with location), **UNVERIFIED** (from memory or a subagent summary; must be checked before relying on it), or **MEASURED** (number produced by a run). Nothing is closed by assertion; an item closes only with evidence recorded in the Build log. Append, never rewrite history; corrections go in the Corrections section.
+
+## Decisions (user-confirmed)
+
+| Topic | Decision |
+|---|---|
+| Packaging | Embedded `/viewer` plus npm package |
+| SDKs | Fern SDKs expose `/v1/scenes` and CZML |
+| Caps | 2,000 samples/track, 20 objects/scene, 24 h; over-cap returns 4xx |
+| Frames v1 | FIXED (ECEF) only; INERTIAL deferred |
+| Conjunction layer | Add `primary_id`/`secondary_id` filters to `/conjunctions/search` |
+| Spec drift | Fix OpenAPI `format` text and type `czml` in phase 1 |
+| Viewer auth | Login form + paste-token fallback, token in memory only, strict CSP. "Defense grade" is not yet defined (see Q1) |
+
+## Corrections to earlier statements
+
+- C1. I wrote that phase 1 would test to "1 m (the doc says)". **VERIFIED** (`ASTRODYNAMICS_FORMULAS.md` §12.7, L1098-1105): 1 m / 1 mm/s is agreement with an ERFA reference implementing the *same simplifications*. Absolute frame accuracy is worse: DUT1=0 gives up to ~0.4 km at the equator, polar motion up to ~10 m, no nutation. CZML FIXED positions inherit this.
+- C2. I proposed SRI hashes on vendored Cesium as hardening. For same-origin files this adds almost nothing (an attacker who can alter the file can alter the page that carries the hash). It only helps against CDN tampering. Dropping it as a security claim.
+- C3. "Split ground tracks at the antimeridian" was listed under CZML phase 1. A 3-D `cartesian` FIXED path has no wrap. Splitting applies to GeoJSON (already done, `build_anti_meridian_geojson_geometry`) and to ground-clamped polylines/footprint polygons. Scope narrowed accordingly (R9).
+- C4. The issue says "no second code path" for passes CZML. Not established; see R6.
+
+## Risks
+
+Severity: H = could produce wrong science or a security hole; M = rework or user-visible breakage; L = polish.
+
+| ID | Sev | Risk | Evidence / status | Resolution needed |
+|---|---|---|---|---|
+| R1 | H | **Interpolation error.** CZML packet sets no `interpolationAlgorithm`, so Cesium defaults to linear. Orbit in ECEF is curved; at 30-60 s steps a LEO chord (~230-460 km) deviates from the arc by far more than any frame error. | **VERIFIED** no `interpolation*` in `src/` (grep) and `generate_czml_document` emits none (`astrodynamics.rs:525-575`). Default LINEAR/degree 1 now **sourced** to the CZML Guide (via subagent summary, 2026-10-05; not re-read by me). Magnitude: UNVERIFIED estimate. | Emit `LAGRANGE` degree ≥5 hints; **measure** max deviation vs direct SGP4 at midpoints for LEO/MEO/GEO/Molniya before choosing step and degree. |
+| R2 | H | **Frame accuracy overstated.** See C1. Viewer shows Cesium's own Earth orientation (full EOP); we send FIXED from GMST-only. Offset up to ~0.4 km vs truth, and vs Cesium's globe. | **VERIFIED** doc §12.7. CZML Guide defines `FIXED`/`INERTIAL` but not which Earth-orientation model backs them (subagent report), so Cesium-side behavior remains UNVERIFIED. | State the budget in §13 and the UI; verify Cesium's FIXED handling (Q3). Do not claim "viewer matches API to 1 m" — only "matches API values". |
+| R3 | H | **TLE staleness.** SGP4 error grows with distance from TLE epoch. A 24 h scene started far from epoch is silently inaccurate. | UNVERIFIED (general SGP4 knowledge); nothing in the groundtrack path surfaces epoch age (handler read, L555-612). | Return TLE epoch + age in scene metadata; define a warn/reject threshold (Q6). |
+| R4 | M | **Cap tests would be self-referential.** The issue's golden test compares CZML to `transform_coordinate_frame`, the same code that produced the samples. AGENTS.md §2 forbids this. | **VERIFIED** AGENTS.md §2. An independent oracle exists: `tests/transforms_reference_tests.rs` + `tests/reference/gen_transform_reference.py` (numpy+ERFA, shares no code). | Golden test must assert against the ERFA-derived reference, not the service. Extend the generator for groundtrack-style samples. |
+| R5 | M | **Rejecting over-cap is a breaking change** on groundtrack, which currently clamps silently (`generate_ground_track` clamps 1-1440 min, 1-300 s, `astrodynamics.rs` ~L573). Release pipeline only releases on feat/fix/perf/breaking. | Clamp **VERIFIED**; release rule seen in commit title `74e5873` only (workflow file not read). | Mark `feat!`/BREAKING; check cache-key behavior (key is built from *requested* values before clamping, handler L574-582) so equivalent requests don't fragment the cache. |
+| R6 | M | **Passes CZML needs trajectory samples.** `find_pass_schedule` (`astrodynamics.rs:1395`) returns events; whether it exposes positions is unread. If not, CZML requires re-propagation, i.e. a second code path. | **UNVERIFIED** (function body not read). | Read it; decide reuse vs new sampler; update C4. |
+| R7 | M | **Fern union support.** `POST /v1/scenes` with a `type`-discriminated `Layer` union must generate sanely in 5 SDKs (TS/Py/Go/Java/Rust). Union codegen is a known weak point. | UNVERIFIED. | Prototype the schema and run `make sdk` for all five before committing to the shape. |
+| R8 | M | **Content negotiation invisible to SDKs.** `Accept: application/vnd.cesium+json` cannot be expressed per-operation by utoipa cleanly; SDKs would only see JSON. | UNVERIFIED. | Prefer `?format=czml` as the documented path; treat Accept as server-side convenience, or drop it. |
+| R9 | M | **Footprint polygon at poles/antimeridian.** Footprint ring validity is already special-cased (`footprint_ring_is_simple`, `astrodynamics.rs:470`). A CZML polygon must handle the same cases. | Function **VERIFIED** to exist; CZML behavior UNVERIFIED. | Tests for polar and antimeridian footprints (this is the real home of C3). |
+| R10 | M | **CSP vs Cesium.** `default-src 'self'` may break Cesium (workers via blob:, data:/blob: images, possibly eval-like paths). A weakened CSP defeats the security claim. | UNVERIFIED. | Test the vendored build under the exact CSP before shipping; document each relaxation (Q2). |
+| R11 | M | **In-memory JWT is not XSS-proof.** Memory-only storage stops persistence theft, not same-page script reading the variable. The real protection is CSP + no third-party script. | Reasoned, not tested. | Don't describe it as XSS-proof. Keep dependency surface minimal; no third-party origins by default. |
+| R12 | M | **Login brute force.** Viewer login form calls `/v1/auth/login`; rate-limit applicability unknown. `rate_limit_layer` sits on `api_routes` (`lib.rs`), keyed by `extract_client_key`. | Layer placement **VERIFIED**; whether limits are per-route or per-key UNVERIFIED (middleware not read). | Read middleware; test login throttling. "Rate-limit scenes separately" may need new code. |
+| R13 | M | **Payload target unmeasured.** 2,000 samples x 4 numbers x 20 objects is ~160k numbers; raw JSON size and gzip ratio are guesses. The ~1 MB gzipped target may or may not hold. | UNVERIFIED estimate. | Measure on a realistic 6 h / 5-object scene; adjust caps from data, not intuition. |
+| R14 | M | **Cesium bundle vs container.** Full Cesium (workers, assets, third-party) is large; AGENTS.md says the image runs only the binary. Embedding bloats the binary; external assets break "no build step / works offline" unless copied into the image. | AGENTS.md **VERIFIED**; Cesium size UNVERIFIED. | Measure a minimal build; decide embed vs `VIEWER_ASSETS_DIR`-only (Q4). |
+| R15 | L | **Compute pool mismatch.** AGENTS.md says Rayon pools (`MAX_EXPRESS_CORES`/`MAX_HEAVY_CORES`); handlers use `tokio::task::spawn_blocking` (12 sites, e.g. L589). The issue says "existing heavy-compute pool". | spawn_blocking **VERIFIED**; whether `compute.rs` is wired in is UNVERIFIED. | Read `compute.rs`; scenes must follow AGENTS.md, not copy the handlers blindly. |
+| R16 | L | **Time scales.** Cesium uses TAI-based JulianDate with leap seconds; we use UTC-as-UT1 (DUT1=0). Sub-second sample times can disagree. | UNVERIFIED. | Check in Q3 experiment. |
+| R17 | L | **Non-finite samples.** `propagate` errors are currently skipped silently (`if let Ok`, `astrodynamics.rs` ~L590), so a decayed object yields a short track with no report. | **VERIFIED** code shape. | Count and report dropped samples in the response. |
+
+## Open questions
+
+- Q1. What is the threat model behind "defense grade"? Candidates: untrusted network, shared workstation, malicious tile host, compromised dependency, insider. Each changes controls (e.g. mTLS-bound tokens exist server-side already, `cnf.x5t#S256`). Until answered, viewer auth is a reasonable baseline, not a validated one.
+- Q2. Which CSP relaxations does Cesium actually require? (Experiment, R10.)
+- Q3. (CZML spec is silent; needs Cesium source/docs or an experiment.) How does Cesium treat FIXED samples relative to its own Earth orientation, and what is the on-screen offset vs our GMST-only values? Needed before any claim about frames; also gates INERTIAL trails.
+- Q4. Embed Cesium in the binary, or ship it in the image and serve from disk? (R14.)
+- Q5. Do `primary_id`/`secondary_id` on conjunction search run a pairwise computation, or filter the catalog search results? Pairwise is far cheaper; is there such a function? UNVERIFIED.
+- Q6. What TLE-age threshold warns or rejects? Needs a number backed by SGP4 error data.
+- Q7. Adaptive step sizing: worth it in v1, or fixed step + Lagrange first? Decide from R1 measurements.
+- Q8. Time-range rule across layers (union vs intersection) and behavior outside a layer's interval. Unspecified in the issue; pick and document.
+- Q10. Rate-limit key trusts client-supplied `X-Forwarded-For` (R12). Fix in this issue, separate security issue, or accept given deployment behind a stripping LB? Login brute-force protection depends on it.
+- Q9. Does the existing `czml` field need to stay in `GroundTrackResponse` for compatibility while scenes use new builders?
+
+## Build log (append below)
+
+Format: `YYYY-MM-DD — item — what was run — result — status change`.
+
+- 2026-10-05 — R1/R2/R16/C3 — Haiku subagent read CZML Guide + sub-pages — (a) default `referenceFrame` is `FIXED`, only values `FIXED`/`INERTIAL`; the spec does not name ECEF/ICRF. (b) default interpolation `LINEAR`, degree 1; `LAGRANGE`/`HERMITE` valid. (c) `cartesian` is `[t,x,y,z,...]`, t in seconds from `epoch` or ISO time. (d) document packet carries `version` and `clock`; our current document packet emits no `clock`. (e) `path.resolution` default 60 s, `leadTime`/`trailTime` unset = unlimited. (f) polygon docs say nothing on antimeridian; polyline has `clampToGround` (default false), no antimeridian text. (g) **no statement** on time standard, leap seconds, or EOP. — R1 evidence strengthened (still needs measurement); R2, R16, Q3 unchanged (spec silent); R9 confirmed as a real gap (no spec guarantee). All secondhand via subagent; load-bearing quotes to be re-checked against the wiki before the §13 text cites them.
+- Implication for the build: we must state `referenceFrame: "FIXED"` explicitly (do not rely on default), set `interpolationAlgorithm`/`interpolationDegree`, and add a `clock` to the document packet.
+
+- 2026-10-05 — R1 — throwaway Rust test (deleted): truth = `generate_ground_track` at 1 s over 120 min; coarse nodes every 30/60/120/300 s; interpolate in ECEF at every 1 s point (interior only, first/last 3 nodes excluded); max position error vs truth. Real TLE: ATLAS CENTAUR 2 (e=0.058, 14 rev/day) from `tests/groundtrack_tests.rs`. Synthetic TLEs (NOT real objects, hand-built with valid checksums): GEO (i=0.05, e=2e-7, 1.00271 rev/day) and Molniya (i=63.4, e=0.7, argp=270, 2.00601 rev/day, window starts near perigee).
+  - LEO linear: 0.85 km @30 s, 3.4 km @60 s, 13.7 km @120 s, 85 km @300 s. LEO Lagrange-5: 0.022 m @30 s, 0.023 m @60 s, 0.41 m @120 s, 93 m @300 s.
+  - Molniya linear: 0.35 / 1.3 / 4.6 / 19.7 km. Lagrange-5: 0.064 m @30-60 s, 0.14 m @120 s, 10 m @300 s.
+  - GEO: both ~0.1 m (floor ~12 cm in every case; cause not investigated, likely truth-sampling noise or f64 time handling; irrelevant at this size but unexplained).
+  - Result: **R1 confirmed and quantified.** Linear error at the *default* 30 s step (0.85 km) exceeds the frame error budget (~10 m polar motion, ≤0.4 km DUT1) and would visibly detach the satellite from its path. Lagrange-5 is below 1 m for steps ≤120 s on these cases. Status: mitigation decided (explicit `LAGRANGE`, degree 5, step cap 120 s for CZML), pending a permanent regression test.
+  - Limits of this measurement: one real LEO orbit, two synthetic orbits, one 2 h window, no decayed or very-low-perigee case, no sub-30 s dynamics. The ISS-like case failed TLE checksum (my typo) and was not measured.
+- 2026-10-05 — R6 — read `find_pass_schedule` (`astrodynamics.rs:1395`) and `SatellitePass` (`models/satellite.rs:199`) — passes return events only (AOS/TCA/LOS times, az/el, range); no positions. — **R6 resolved: passes CZML requires re-propagation over each [AOS, LOS] interval**, so the issue's "no second code path" is not literally true. Plan: extract the propagate+TEME→ECEF step from `generate_ground_track` into one shared sampler used by both. Also note `find_pass_schedule` clamps duration to 14 days, above the 24 h scene cap, so `/passes?format=czml` with `duration_days>1` will be rejected under the decided cap policy (consequence, not yet user-reviewed).
+- 2026-10-05 — R12 — read `rate_limit_layer`/`extract_client_key` (`ratelimit/middleware.rs`) — one limiter for every route, keyed on client IP only; key is the **first `X-Forwarded-For` value, taken verbatim from the request**. Unless a trusted proxy overwrites that header, a client can send a fresh value per request and never hit the limit. Also: there is no per-route or per-user limit, so "rate-limit scenes separately" and login brute-force throttling need new code. — Pre-existing issue, not caused by this work; **needs your decision before phase 2/3** (see Q10). Phase 1 unaffected.
+- 2026-10-05 — R15 — `AstreaComputeEngine` (`services/compute.rs`) defines express/heavy Rayon pools + semaphores; handlers shown use `tokio::task::spawn_blocking`. Whether the engine is wired into any handler: not yet checked. Still UNVERIFIED.
+- 2026-10-05 — Phase 1 structure — split by concern: `services/ephemeris.rs` (TLE→ECEF sampling, caps, dropped-sample count; no CZML knowledge), `services/czml/packet.rs` (stateless builders; frame/interpolation fixed privately so callers cannot omit them), `services/czml/mod.rs` (composition). `generate_ground_track` now uses `Ephemeris`; old `generate_czml_document` removed (no other callers: grep). Builders for point/polyline/label deliberately NOT written yet (no phase-1 consumer). `find_pass_schedule` and 5 other sites in `astrodynamics.rs` still parse TLEs inline (pre-existing duplication, not migrated; passes CZML will use `Ephemeris`).
+  - VERIFIED: clippy `-D warnings` clean; unit tests pass (explicit FIXED/LAGRANGE/5 in output; over-cap rejected; empty input).
+  - Behaviour change (breaking, per decision): ground track now returns 400 instead of clamping for duration >1440 min or >2000 samples (e.g. step=1 over 1 h); CZML output also 400 for step >120 s. Cache key still built from requested values (R5: unchanged, now moot for rejected requests since errors aren't cached — UNVERIFIED, check).
+  - R17 partially addressed: non-finite samples dropped and counted in `Samples.dropped`, but **not yet surfaced in the API response** (needs a response field → OpenAPI/SDK change; decision pending).
+  - UNVERIFIED: Cesium behaviour when a LAGRANGE-5 property has <6 samples (we emit it regardless).
+- 2026-10-05 — Decisions this turn: (1) `droppedSamples` added to `GroundTrackResponse` now (pre-release; R17 closed at API level — passes CZML does not report drops, UNVERIFIED gap). (2) Passes: CZML follows the existing passes API semantics first — `duration_days` stays 1-14, no 24 h scene cap on passes; each pass is its own track ≤ cap (30 s step). Payload scales with pass count (R13, unmeasured). (3) **R12 / Q10 → separate PR** (rate-limit `X-Forwarded-For` trust); not touched here. Phase 2/3 login throttling is blocked on it.
+  - Added `?format=czml` on `/passes` → `czml` field (one entity per pass, ends exactly at LOS; test asserts last sample offset == LOS-AOS). Fixed OpenAPI `format` description; `czml` typed as array of objects (my first attempt typed it `object` — wrong, CZML is an array; caught on reading the generated diff).
+  - VERIFIED: `make lint`, `make test`, `make openapi` clean (openapi.json regenerated). NOT run: `make sdk` (Fern; do at PR time).
+  - Still open for phase 1: ERFA-based golden test (R2/C1), `ASTRODYNAMICS_FORMULAS.md` §13.

@@ -1102,3 +1102,33 @@ with $\vec{\omega}_\oplus \times \vec{r}_{ECI} = [-\omega_\oplus y,\ \omega_\opl
 - **Required anomaly:** Keplerian input needs `trueAnomalyDeg` or `meanAnomalyDeg`; equinoctial input needs `trueLongitudeDeg` or `meanLongitudeDeg`. A missing angle returns HTTP 400 rather than defaulting to $0$.
 - **Validation:** `tests/transforms_reference_tests.rs` checks the element transforms (Cartesian, Keplerian and equinoctial inputs, prograde and retrograde, equatorial, polar, GEO, Molniya) against an independent equinoctial implementation built from the angular-momentum and eccentricity vectors, Kepler's equation against bisection and Vallado Example 2-1, and the frame chain against ERFA (GMST 1982, WGS-84, finite-differenced velocity). Tolerances: elements $10^{-9}$, position 1 m, velocity 1 mm/s. The values are regenerated with `tests/reference/gen_transform_reference.py`.
 
+
+---
+
+## 13. CZML Trajectory Output (`format=czml`)
+
+Presentation encoding of the ECEF states from Section 2.3; no new physics. Implemented in `src/services/ephemeris.rs` (sampling) and `src/services/czml/` (packets).
+
+### 13.1 Encoding
+- **Frame:** every `position` sets `referenceFrame: "FIXED"` explicitly. Samples are the Section 2.3 ECEF vectors converted to metres: $[t_i,\ 1000\,x_i,\ 1000\,y_i,\ 1000\,z_i]$, with $t_i$ in seconds from the property's `epoch` (the first sample).
+- **Interpolation:** every `position` sets `interpolationAlgorithm: "LAGRANGE"`, `interpolationDegree: 5`. Cesium's default is `LINEAR`, degree 1.
+- **Clock:** the `document` packet carries a `clock` spanning the sampled interval.
+- **Passes:** `/passes?format=czml` re-propagates each pass over $[t_{AOS}, t_{LOS}]$ at 30 s and appends the exact LOS instant, giving one entity per pass.
+
+### 13.2 Why not the default
+Interpolation error against 1 s samples of the same ephemeris (interior samples, max position error; measured once, throwaway test, one real LEO TLE (e = 0.058) and one synthetic Molniya-like TLE, 2 h window):
+
+| Step | LEO linear | LEO Lagrange-5 | Molniya linear | Molniya Lagrange-5 |
+|------|-----------|----------------|----------------|--------------------|
+| 30 s | 0.85 km | 0.022 m | 0.35 km | 0.064 m |
+| 60 s | 3.4 km | 0.023 m | 1.3 km | 0.064 m |
+| 120 s | 13.7 km | 0.41 m | 4.6 km | 0.14 m |
+| 300 s | 85 km | 93 m | 19.7 km | 10 m |
+
+Hence the CZML step is capped at 120 s. `tests/czml_tests.rs` keeps a regression check (ISS TLE, 30/60/120 s, error < 1 m) using an independent textbook Lagrange implementation. This bounds *interpolation* error only; it says nothing about frame accuracy.
+
+### 13.3 Limits
+- **Frame accuracy is unchanged from Section 12.7:** GMST-only rotation, $DUT1 = 0$, no polar motion or nutation (up to $\approx 0.4$ km + $\approx 10$ m). Cesium's own FIXED-frame orientation model is a separate, unquantified difference (open: log R2/Q3).
+- **Caps (reject, never clamp):** span $\le 24$ h, $\le 2000$ samples per track, step $\le 120$ s for CZML.
+- **Dropped samples:** instants where SGP4 fails or returns non-finite values are omitted and counted in `droppedSamples` (ground track). A gap shorter than the interpolation window degrades the local fit; the response does not mark where.
+- **Time scale:** timestamps are UTC as supplied; leap-second handling by Cesium is unverified.

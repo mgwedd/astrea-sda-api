@@ -113,8 +113,11 @@ pub struct GroundTrackResponse {
     pub duration_minutes: usize,
     pub step_seconds: usize,
     pub trajectory: Vec<GroundTrackPoint>,
+    /// Requested sample instants SGP4 could not produce (omitted from `trajectory`)
+    pub dropped_samples: usize,
     pub geojson: Option<GeoJsonFeature>,
     pub footprint_polygon: Option<GeoJsonFeature>,
+    #[schema(value_type = Option<Vec<Object>>)]
     pub czml: Option<serde_json::Value>,
 }
 
@@ -226,6 +229,10 @@ pub struct PassScheduleResponse {
     pub forecast_days: usize,
     pub passes_found: usize,
     pub passes: Vec<SatellitePass>,
+    /// CZML document with one entity per pass (only when `format=czml`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Vec<Object>>)]
+    pub czml: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

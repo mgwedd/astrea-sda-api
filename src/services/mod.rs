@@ -1,5 +1,7 @@
 pub mod astrodynamics;
 pub mod compute;
+pub mod czml;
+pub mod ephemeris;
 pub mod maneuver;
 pub mod pipeline;
 pub mod ratelimit;
