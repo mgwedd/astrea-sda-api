@@ -10,16 +10,20 @@ use tokio::sync::{oneshot, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-/// Concurrent in-flight jobs per non-admin user; further requests are rejected, not queued.
+/// Concurrent in-flight jobs per user; further requests are rejected, not queued.
 const USER_QUOTA: usize = 3;
+/// Admins get 10x the user quota.
+const ADMIN_QUOTA: usize = USER_QUOTA * 10;
+/// Semaphores are keyed by (user, quota) so a role change cannot reuse a semaphore of the wrong size.
+pub type QuotaKey = (String, usize);
 pub const QUOTA_EXCEEDED: &str = "User quota exceeded";
 
 /// Holds one slot of a user's quota. On drop the user's semaphore is evicted once idle,
 /// so `user_limits` holds only users with work in flight.
 struct UserPermit {
     permit: Option<OwnedSemaphorePermit>,
-    limits: Arc<DashMap<String, Arc<Semaphore>>>,
-    user_id: String,
+    limits: Arc<DashMap<QuotaKey, Arc<Semaphore>>>,
+    key: QuotaKey,
 }
 
 impl Drop for UserPermit {
@@ -27,8 +31,9 @@ impl Drop for UserPermit {
         drop(self.permit.take());
         // Acquisition happens under the same shard lock (see `acquire_user`), so an
         // idle semaphore cannot gain a holder between this check and the removal.
+        let quota = self.key.1;
         self.limits
-            .remove_if(&self.user_id, |_, s| s.available_permits() == USER_QUOTA);
+            .remove_if(&self.key, |_, s| s.available_permits() == quota);
     }
 }
 
@@ -38,7 +43,7 @@ pub struct AstreaComputeEngine {
     pub heavy_pool: Arc<ThreadPool>,
     pub express_limit: Arc<Semaphore>,
     pub heavy_limit: Arc<Semaphore>,
-    pub user_limits: Arc<DashMap<String, Arc<Semaphore>>>,
+    pub user_limits: Arc<DashMap<QuotaKey, Arc<Semaphore>>>,
     pub flight_tracker: MokaCache<u64, String>,
     pub redis_pool: Option<RedisPool>,
 }
@@ -133,12 +138,18 @@ impl AstreaComputeEngine {
         Ok(estimated_ms)
     }
 
-    fn acquire_user(&self, user_id: String) -> Result<UserPermit, String> {
+    fn acquire_user(&self, user_id: String, user_role: &str) -> Result<UserPermit, String> {
+        let quota = if user_role == "admin" {
+            ADMIN_QUOTA
+        } else {
+            USER_QUOTA
+        };
+        let key = (user_id, quota);
         // `try_acquire` runs while the entry's shard lock is held; see `UserPermit::drop`.
         let permit = self
             .user_limits
-            .entry(user_id.clone())
-            .or_insert_with(|| Arc::new(Semaphore::new(USER_QUOTA)))
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(Semaphore::new(quota)))
             .value()
             .clone()
             .try_acquire_owned()
@@ -146,7 +157,7 @@ impl AstreaComputeEngine {
         Ok(UserPermit {
             permit: Some(permit),
             limits: self.user_limits.clone(),
-            user_id,
+            key,
         })
     }
 
@@ -165,12 +176,7 @@ impl AstreaComputeEngine {
         E: Send + 'static,
         F: FnOnce(CancellationToken) -> Result<T, E> + Send + 'static,
     {
-        // User identity quota (role == "admin" bypasses the user semaphore)
-        let _user_permit = if user_role != "admin" {
-            Some(self.acquire_user(user_id)?)
-        } else {
-            None
-        };
+        let _user_permit = self.acquire_user(user_id, &user_role)?;
 
         // Swimlane routing (Rayon pool selection based on estimated_ms)
         let (pool, global_sem) = if estimated_ms <= 500 {

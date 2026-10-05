@@ -66,7 +66,7 @@ async fn test_compute_engine_coalescing_swimlane_and_user_quota() {
 }
 
 #[tokio::test]
-async fn test_admin_role_bypasses_user_quota() {
+async fn test_admin_role_runs_under_its_own_quota() {
     let config = ServerConfig::from_env();
     let engine = AstreaComputeEngine::new(&config);
 
@@ -173,7 +173,7 @@ async fn user_quota_rejects_instead_of_queueing_and_evicts_idle_users() {
         .await;
     assert_eq!(over.err().as_deref(), Some("User quota exceeded"));
 
-    // Another user and an admin are unaffected.
+    // Another user is unaffected, and the same id as admin has its own, 10x larger quota.
     assert!(engine
         .run(1, "other".into(), "viewer".into(), |_| Ok::<_, ()>(()))
         .await
@@ -204,4 +204,35 @@ async fn dropping_the_caller_cancels_a_running_job() {
     assert_eq!(stopped.load(Ordering::SeqCst), 0);
     h.abort();
     wait_for(|| stopped.load(Ordering::SeqCst) == 1).await;
+}
+
+#[tokio::test]
+async fn admin_quota_is_ten_times_the_user_quota() {
+    // Enough express slots that only the per-user quota can reject.
+    let engine = AstreaComputeEngine::new(&ServerConfig {
+        express_cores: 40,
+        ..ServerConfig::from_env()
+    });
+    let (started, stopped) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let held: Vec<_> = (0..30)
+        .map(|_| {
+            let (e, s, d) = (engine.clone(), started.clone(), stopped.clone());
+            tokio::spawn(async move {
+                e.run(1, "a".into(), "admin".into(), block_until_cancelled(s, d))
+                    .await
+            })
+        })
+        .collect();
+    wait_for(|| started.load(Ordering::SeqCst) == 30).await;
+
+    let over = engine
+        .run(1, "a".into(), "admin".into(), |_| Ok::<_, ()>(()))
+        .await;
+    assert_eq!(over.err().as_deref(), Some("User quota exceeded"));
+
+    for h in &held {
+        h.abort();
+    }
+    wait_for(|| stopped.load(Ordering::SeqCst) == 30).await;
+    wait_for(|| engine.user_limits.is_empty()).await;
 }

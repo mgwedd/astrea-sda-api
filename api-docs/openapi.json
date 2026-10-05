@@ -1357,7 +1357,7 @@
             }
           },
           "429": {
-            "description": "Per-user compute quota (3 concurrent jobs) exceeded; retry when one finishes",
+            "description": "Per-user compute quota (3 concurrent jobs, 30 for admins) exceeded; retry when one finishes",
             "content": {
               "application/json": {
                 "schema": {
@@ -1825,7 +1825,7 @@
             }
           },
           "429": {
-            "description": "Per-user compute quota (3 concurrent jobs) exceeded; retry when one finishes",
+            "description": "Per-user compute quota (3 concurrent jobs, 30 for admins) exceeded; retry when one finishes",
             "content": {
               "application/json": {
                 "schema": {
