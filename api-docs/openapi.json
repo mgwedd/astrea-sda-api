@@ -12,120 +12,6 @@
     "version": "0.1.0"
   },
   "paths": {
-    "/v1/astrodynamics/transforms/elements": {
-      "post": {
-        "tags": [
-          "Astrodynamics"
-        ],
-        "summary": "Transform Orbital Elements (Cartesian, Keplerian, Modified Equinoctial)",
-        "description": "Converts between Cartesian state vectors, Classical Keplerian elements, and singularity-free Modified Equinoctial elements (p, f, g, h, k, L). Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).",
-        "operationId": "transformOrbitalElements",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ElementTransformRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Orbital elements transformed successfully across all representations",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ElementTransformResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid request payload or singular/hyperbolic orbit",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized - Missing or invalid JWT token",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
-      }
-    },
-    "/v1/astrodynamics/transforms/frames": {
-      "post": {
-        "tags": [
-          "Astrodynamics"
-        ],
-        "summary": "Transform Coordinate Frames (ECI, ECEF, Topocentric SEZ / NED)",
-        "description": "Converts position and velocity state vectors across ECI (TEME), ECEF (WGS-84), and Topocentric Horizon frames (SEZ, NED) with Greenwich Mean Sidereal Time rotation, kinematic velocity transport, Bowring geodetics, and look angle slant range/range rates. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).",
-        "operationId": "transformCoordinateFrames",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/FrameTransformRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "State vectors transformed successfully across coordinate frames",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/FrameTransformResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid request payload or missing topocentric observer coordinates",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized - Missing or invalid JWT token",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
-      }
-    },
     "/v1/auth/login": {
       "post": {
         "tags": [
@@ -796,6 +682,120 @@
           },
           "404": {
             "description": "No satellite overhead found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/v1/satellites/transforms/elements": {
+      "post": {
+        "tags": [
+          "Astrodynamics"
+        ],
+        "summary": "Transform Orbital Elements (Cartesian, Keplerian, Modified Equinoctial)",
+        "description": "Converts between Cartesian state vectors, Classical Keplerian elements, and singularity-free Modified Equinoctial elements (p, f, g, h, k, L). Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).",
+        "operationId": "transformOrbitalElements",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ElementTransformRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Orbital elements transformed successfully across all representations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ElementTransformResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request payload or singular/hyperbolic orbit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Missing or invalid JWT token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/v1/satellites/transforms/frames": {
+      "post": {
+        "tags": [
+          "Astrodynamics"
+        ],
+        "summary": "Transform Coordinate Frames (ECI, ECEF, Topocentric SEZ / NED)",
+        "description": "Converts position and velocity state vectors across ECI (TEME), ECEF (WGS-84), and Topocentric Horizon frames (SEZ, NED) with Greenwich Mean Sidereal Time rotation, kinematic velocity transport, Bowring geodetics, and look angle slant range/range rates. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).",
+        "operationId": "transformCoordinateFrames",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FrameTransformRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "State vectors transformed successfully across coordinate frames",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrameTransformResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request payload or missing topocentric observer coordinates",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Missing or invalid JWT token",
             "content": {
               "application/json": {
                 "schema": {

@@ -196,11 +196,11 @@ pub fn create_router_with_auth_and_limiter(
             post(handlers::calculate_collision_probability),
         )
         .route(
-            "/astrodynamics/transforms/elements",
+            "/satellites/transforms/elements",
             post(handlers::transform_elements),
         )
         .route(
-            "/astrodynamics/transforms/frames",
+            "/satellites/transforms/frames",
             post(handlers::transform_frames),
         )
         .route(

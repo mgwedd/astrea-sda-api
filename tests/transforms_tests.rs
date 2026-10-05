@@ -357,3 +357,120 @@ fn vallado_example_2_5_rv_to_coe() {
         k.true_anomaly_deg
     );
 }
+
+// --- alignment with the state endpoint and the math spec ---
+
+#[test]
+fn cartesian_to_keplerian_matches_osculating_elements_for_degenerate_orbits() {
+    use astrea_sda_api::services::astrodynamics::osculating_elements;
+    // circular equatorial retrograde, circular inclined, elliptical equatorial
+    for (p, v) in [
+        ([7000.0, 0.0, 0.0], [0.0, -7.546_052, 0.0]),
+        ([7000.0, 0.0, 0.0], [0.0, 5.335_9, 5.335_9]),
+        ([8000.0, 0.0, 0.0], [0.0, 7.7, 0.0]),
+    ] {
+        let k = cartesian_to_keplerian(p, v);
+        let o = osculating_elements(p, v);
+        assert_eq!(k.raan_deg, o.raan_deg);
+        assert_eq!(k.arg_of_perigee_deg, o.arg_of_perigee_deg);
+        assert_eq!(k.true_anomaly_deg, o.true_anomaly_deg);
+        assert_eq!(k.inclination_deg, o.inclination_deg);
+    }
+}
+
+// Independent oracle: WGS-84 radius at the apsis latitude (spec 7.5), literals only.
+#[test]
+fn keplerian_altitudes_use_radius_at_apsis_latitude() {
+    let (a_ax, b_ax) = (6378.137_f64, 6_356.752_314_245_f64);
+    let kep = KeplerianInput {
+        semi_major_axis_km: 7000.0,
+        eccentricity: 0.01,
+        inclination_deg: 90.0,
+        raan_deg: 10.0,
+        arg_of_perigee_deg: 90.0,
+        true_anomaly_deg: Some(30.0),
+        mean_anomaly_deg: None,
+    };
+    let res = transform_orbital_elements(&ElementTransformRequest {
+        cartesian: None,
+        keplerian: Some(kep),
+        equinoctial: None,
+    })
+    .unwrap();
+    // polar orbit, w = 90: apsides over the pole, radius b
+    let hp = 7000.0 * 0.99 - b_ax;
+    assert!(
+        (res.keplerian.perigee_altitude_km - hp).abs() < 1e-3,
+        "{}",
+        res.keplerian.perigee_altitude_km
+    );
+    assert!(a_ax - b_ax > 21.0);
+}
+
+#[test]
+fn missing_anomaly_or_unbound_state_is_rejected() {
+    let no_anomaly = ElementTransformRequest {
+        cartesian: None,
+        keplerian: Some(KeplerianInput {
+            semi_major_axis_km: 7000.0,
+            eccentricity: 0.01,
+            inclination_deg: 51.6,
+            raan_deg: 0.0,
+            arg_of_perigee_deg: 0.0,
+            true_anomaly_deg: None,
+            mean_anomaly_deg: None,
+        }),
+        equinoctial: None,
+    };
+    assert!(transform_orbital_elements(&no_anomaly).is_err());
+    let no_long = ElementTransformRequest {
+        cartesian: None,
+        keplerian: None,
+        equinoctial: Some(EquinoctialInput {
+            p_km: 7000.0,
+            f: 0.0,
+            g: 0.0,
+            h: 0.1,
+            k: 0.0,
+            true_longitude_deg: None,
+            mean_longitude_deg: None,
+            retrograde_factor: None,
+        }),
+    };
+    assert!(transform_orbital_elements(&no_long).is_err());
+    // escape-velocity state: energy > 0
+    let hyper = ElementTransformRequest {
+        cartesian: Some(CartesianState {
+            position_km: [7000.0, 0.0, 0.0],
+            velocity_kms: [0.0, 12.0, 0.0],
+        }),
+        keplerian: None,
+        equinoctial: None,
+    };
+    assert!(transform_orbital_elements(&hyper).is_err());
+}
+
+// The routes live under /v1/satellites/transforms/*, and the old /v1/astrodynamics/* prefix is gone.
+#[tokio::test]
+async fn transform_routes_are_under_satellites() {
+    use astrea_sda_api::{create_router, repository::SatelliteRepository};
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    let app = create_router(SatelliteRepository::new(None).await);
+    for (uri, expected_missing) in [
+        ("/v1/satellites/transforms/elements", false),
+        ("/v1/satellites/transforms/frames", false),
+        ("/v1/astrodynamics/transforms/elements", true),
+        ("/v1/astrodynamics/transforms/frames", true),
+    ] {
+        let req = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        let status = app.clone().oneshot(req).await.unwrap().status();
+        // reachable routes demand auth (401); removed ones do not exist (404)
+        assert_eq!(status == 404, expected_missing, "{uri} -> {status}");
+    }
+}

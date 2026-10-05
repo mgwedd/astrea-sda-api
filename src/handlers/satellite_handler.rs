@@ -1341,7 +1341,7 @@ pub async fn calculate_collision_probability(
 /// Converts between Cartesian state vectors, Classical Keplerian elements, and singularity-free Modified Equinoctial elements (p, f, g, h, k, L). Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).
 #[utoipa::path(
     post,
-    path = "/v1/astrodynamics/transforms/elements",
+    path = "/v1/satellites/transforms/elements",
     operation_id = "transformOrbitalElements",
     request_body = ElementTransformRequest,
     responses(
@@ -1366,7 +1366,7 @@ pub async fn transform_elements(
 /// Converts position and velocity state vectors across ECI (TEME), ECEF (WGS-84), and Topocentric Horizon frames (SEZ, NED) with Greenwich Mean Sidereal Time rotation, kinematic velocity transport, Bowring geodetics, and look angle slant range/range rates. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).
 #[utoipa::path(
     post,
-    path = "/v1/astrodynamics/transforms/frames",
+    path = "/v1/satellites/transforms/frames",
     operation_id = "transformCoordinateFrames",
     request_body = FrameTransformRequest,
     responses(
