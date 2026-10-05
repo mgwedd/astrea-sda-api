@@ -61,6 +61,7 @@ This document provides the formal mathematical foundations, coordinate frame tra
     - [11.1 Mean Motion Derivative Fields & Baseline Drift Model](#111-mean-motion-derivative-fields--baseline-drift-model)
     - [11.2 Semi-Major Axis Residuals & Maneuver Classification](#112-semi-major-axis-residuals--maneuver-classification)
     - [11.3 Non-Parametric Outlier Scoring via Median Absolute Deviation (MAD)](#113-non-parametric-outlier-scoring-via-median-absolute-deviation-mad)
+12. [Element Representations & Coordinate Frame Transforms](#12-element-representations--coordinate-frame-transforms-v1satellitestransforms)
 
 ---
 
@@ -130,10 +131,10 @@ $$
 In this document, $d$ in §2.2 means $d_{\text{UT1}}$ and $d$ in §4.1–§4.2 means $d_{\text{TT}}$.
 
 ### 2.2 Greenwich Mean Sidereal Time (GMST) & Local Sidereal Time (LST)
-Greenwich Mean Sidereal Time in degrees is computed via the IAU formula, with $d_{\text{UT1}}$ from §2.1 (the $T^2$ term, $\approx 0.007''$ in 2026, is neglected):
+Greenwich Mean Sidereal Time in degrees is computed via the IAU 1982 formula (Vallado eq. 3-47), with $d_{\text{UT1}}$ from §2.1 and $T = d_{\text{UT1}}/36525$ Julian centuries. The $T^2$ and $T^3$ terms are kept: omitting the $T^2$ term costs $0.000388^\circ\,T^2 \approx 0.09''$ ($\approx 3$ m) in 2026 and grows quadratically.
 
 $$
-GMST(d_{\text{UT1}}) = \left( 280.46061837^\circ + 360.98564736629^\circ \cdot d_{\text{UT1}} \right) \pmod{360^\circ}
+GMST = \left( 280.46061837^\circ + 360.98564736629^\circ \cdot d_{\text{UT1}} + 0.000387933^\circ\, T^2 - \frac{T^3}{38\,710\,000}\,{}^\circ \right) \pmod{360^\circ}
 $$
 
 Guaranteed strictly positive in $[0^\circ, 360^\circ)$.
@@ -1007,7 +1008,7 @@ $$
 
 An anomaly is flagged when both the robust $z$-score exceeds the statistical sigma threshold ($z_i \ge z_{\text{threshold}}$) and the absolute orbital change exceeds physical detection limits ($|\Delta a| \ge \Delta a_{\text{min}}$ or $|\Delta i| \ge \Delta i_{\text{min}}$).
 
-## 12. Element Representations & Coordinate Frame Transforms (`/v1/astrodynamics/transforms/*`)
+## 12. Element Representations & Coordinate Frame Transforms (`/v1/satellites/transforms/*`)
 
 Implemented in `cartesian_to_keplerian`, `keplerian_to_cartesian`, `keplerian_to_equinoctial`, `equinoctial_to_keplerian`, `solve_kepler_equation`, `transform_orbital_elements`, and `transform_coordinate_frame` in `src/services/astrodynamics.rs`. `GET /v1/satellites/{id}/state` uses the same `cartesian_to_keplerian` routine as Section 7. All elements are osculating, in the TEME/ECI frame, with $\mu_\oplus = 398600.4418\ \text{km}^3/\text{s}^2$.
 
@@ -1029,13 +1030,11 @@ $$\vec{r}_{ECI} = r_{P}\hat{P} + r_{Q}\hat{Q}, \qquad \vec{v}_{ECI} = v_{P}\hat{
 Inputs are validated: $a > 0$ and $0 \le e < 1$ (bound elliptic orbits only). Hyperbolic and parabolic cases return HTTP 400.
 
 ### 12.2 Cartesian to Keplerian (Singular Cases)
-The general algorithm is Section 7. `cartesian_to_keplerian` additionally handles the classical singularities:
+`cartesian_to_keplerian` is the same routine as Section 7 (`osculating_elements`), including the non-singular angle folding of §7.6: relative equatorial test $n/h < 10^{-8}$, circular test $e < 10^{-6}$, and the retrograde flip of $\varpi$ and $l$. The state endpoint and the transform endpoints therefore report identical angles for the same state. Perigee and apogee altitudes use the WGS-84 radius at the apsis latitude (§7.5), not the equatorial $R_E$.
 
-- **Equatorial** ($|\vec{n}| \approx 0$): $\Omega = 0$, and $\omega = \text{atan2}(e_y, e_x)$ (longitude of periapsis) for $e > 10^{-6}$.
-- **Circular inclined** ($e \approx 0$): $\omega = 0$ and $\nu$ becomes the argument of latitude $u = \arccos\left(\frac{\vec{n}\cdot\vec{r}}{|\vec{n}||\vec{r}|}\right)$, with $u \to 2\pi - u$ when $r_z < 0$.
-- **Circular equatorial**: $\nu$ becomes the true longitude $\text{atan2}(r_y, r_x)$.
+Angles in the degenerate cases are conventions, not physical quantities. Only the combined longitude is well defined, which is why Section 12.3 exists. A Keplerian request with $e < 10^{-6}$ or $i \approx 0^\circ$ therefore returns folded angles rather than echoing the input $\omega$, $\Omega$.
 
-Tolerances: $|\vec{n}| < 10^{-8}$, $e < 10^{-6}$. Angles in these degenerate cases are conventions, not physical quantities. Only the combined longitude is well defined, which is why Section 12.3 exists.
+**Bound orbits only.** A Cartesian state with $a \le 0$ or $e \ge 1$ (specific energy $\ge 0$) returns HTTP 400.
 
 ### 12.3 Modified Equinoctial Elements (MEE)
 Singularity-free for $e \to 0$ and $i \to 0$ (Walker, Ireland & Owens 1985; Broucke & Cefola 1972):
@@ -1098,5 +1097,8 @@ with $\vec{\omega}_\oplus \times \vec{r}_{ECI} = [-\omega_\oplus y,\ \omega_\opl
 ### 12.7 Numerical Tolerances and Limitations
 - **Round trips:** Keplerian to Cartesian to Keplerian reproduces $a$ to $10^{-5}$ km and $e$ to $10^{-9}$. Cartesian states round-trip to $10^{-5}$ km and $10^{-8}$ km/s (verified in `tests/transforms_tests.rs`).
 - **Independent oracle:** Vallado, *Fundamentals of Astrodynamics and Applications*, Example 2-5 (RV to COE) is reproduced within the textbook's printed precision.
-- **Frame accuracy:** the ECI/ECEF rotation uses GMST only (no polar motion, UT1-UTC, or nutation). Positional error relative to a full IAU-2006/2000A reduction is on the order of tens of metres at LEO, and larger for TEME vs. ICRF/J2000 comparisons. Do not treat this as an ICRF transform.
+- **Frame accuracy:** the ECI/ECEF rotation uses GMST from $d_{\text{UT1}}$ only, with $DUT1 = 0$ (§2.1) and no polar motion or nutation. The $DUT1$ omission alone gives up to $\approx 0.4\text{ km}$ of position error at the equator (§2.1 error budget), and polar motion adds up to $\approx 10\text{ m}$. Do not treat this as an ICRF or high-precision transform.
 - **Bound orbits only:** $a > 0$, $0 \le e < 1$.
+- **Required anomaly:** Keplerian input needs `trueAnomalyDeg` or `meanAnomalyDeg`; equinoctial input needs `trueLongitudeDeg` or `meanLongitudeDeg`. A missing angle returns HTTP 400 rather than defaulting to $0$.
+- **Validation:** `tests/transforms_reference_tests.rs` checks the element transforms (Cartesian, Keplerian and equinoctial inputs, prograde and retrograde, equatorial, polar, GEO, Molniya) against an independent equinoctial implementation built from the angular-momentum and eccentricity vectors, Kepler's equation against bisection and Vallado Example 2-1, and the frame chain against ERFA (GMST 1982, WGS-84, finite-differenced velocity). Tolerances: elements $10^{-9}$, position 1 m, velocity 1 mm/s. The values are regenerated with `tests/reference/gen_transform_reference.py`.
+
