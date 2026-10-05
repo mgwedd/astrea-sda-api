@@ -410,6 +410,14 @@ pub fn local_earth_radius_km(lat_deg: f64) -> f64 {
     earth_radius_at_geocentric_lat_km(phi_gc)
 }
 
+/// Perigee and apogee altitudes (km) above the WGS-84 ellipsoid for mean/osculating elements.
+/// The apsides lie at geocentric latitudes +/- asin(sin i sin w), which share one ellipsoid radius.
+pub fn apsis_altitudes_km(a_km: f64, ecc: f64, inc_deg: f64, argp_deg: f64) -> (f64, f64) {
+    let phi_gc = (inc_deg.to_radians().sin() * argp_deg.to_radians().sin()).asin();
+    let re = earth_radius_at_geocentric_lat_km(phi_gc);
+    (a_km * (1.0 - ecc) - re, a_km * (1.0 + ecc) - re)
+}
+
 /// Computes the sub-satellite footprint coverage circle radius on Earth in km,
 /// using the local geocentric radius at the sub-satellite geodetic latitude
 pub fn calculate_footprint_radius(alt_km: f64, lat_deg: f64) -> f64 {
@@ -689,6 +697,11 @@ pub fn generate_ground_track(
     })
 }
 
+/// Mean obliquity of the ecliptic (spec 4.1) at `d` days TT from J2000.0, in radians
+pub fn mean_obliquity_rad(d_tt: f64) -> f64 {
+    (23.439 - 0.00000036 * d_tt).to_radians()
+}
+
 /// Computes low-precision Sun ECI position vector [x, y, z] in km
 pub fn calculate_sun_position_eci(time: DateTime<Utc>) -> [f64; 3] {
     let d = julian_date_tt(time) - 2451545.0;
@@ -699,8 +712,7 @@ pub fn calculate_sun_position_eci(time: DateTime<Utc>) -> [f64; 3] {
     let lambda_deg = l_deg + 1.915 * g_deg.sin() + 0.020 * (2.0 * g_deg).sin();
     let lambda_rad = lambda_deg.to_radians();
 
-    let eps_deg = 23.439 - 0.00000036 * d;
-    let eps_rad = eps_deg.to_radians();
+    let eps_rad = mean_obliquity_rad(d);
 
     let r_au = 1.00014 - 0.01671 * g_deg.cos() - 0.00014 * (2.0 * g_deg).cos();
     let r_km = r_au * 149_597_870.7;
@@ -1060,20 +1072,25 @@ pub fn find_conjunctions(
     }
 }
 
-/// Relativistic received frequency (spec 8.2): transverse Doppler, line-of-sight term and
-/// gravitational blue shift for an observer at rest in ECEF. Speeds in km/s, radii in km.
+/// Relativistic received frequency (spec 8.2): time dilation of transmitter and receiver in the
+/// inertial frame, line-of-sight term and gravitational blue shift. Speeds are inertial (ECI)
+/// speeds in km/s, radii in km.
 pub fn relativistic_received_freq_hz(
     f0_hz: f64,
     range_rate_kms: f64,
-    sat_speed_kms: f64,
+    sat_speed_eci_kms: f64,
+    obs_speed_eci_kms: f64,
     r_obs_km: f64,
     r_sat_km: f64,
 ) -> f64 {
     const C_KMS: f64 = 299_792.458;
     const MU_KM3_S2: f64 = 398_600.441_8;
-    let beta = sat_speed_kms / C_KMS;
+    let beta_sat = sat_speed_eci_kms / C_KMS;
+    let beta_obs = obs_speed_eci_kms / C_KMS;
     let grav = MU_KM3_S2 / (C_KMS * C_KMS) * (1.0 / r_obs_km - 1.0 / r_sat_km);
-    f0_hz * (1.0 - beta * beta).sqrt() / (1.0 + range_rate_kms / C_KMS) * (1.0 + grav)
+    f0_hz * ((1.0 - beta_sat * beta_sat) / (1.0 - beta_obs * beta_obs)).sqrt()
+        / (1.0 + range_rate_kms / C_KMS)
+        * (1.0 + grav)
 }
 
 /// Computes range rate (km/s) and real-time RF Doppler frequency shift (Hz) for a ground observer
@@ -1140,11 +1157,17 @@ pub fn calculate_doppler_shift(
     // Speed of light in km/s
     let c_kms = 299_792.458;
     let corrected_freq_hz = if relativistic {
-        let v_sat =
-            (sat_vel_ecf[0].powi(2) + sat_vel_ecf[1].powi(2) + sat_vel_ecf[2].powi(2)).sqrt();
+        let v_sat = prediction
+            .velocity
+            .iter()
+            .map(|v| v * v)
+            .sum::<f64>()
+            .sqrt();
+        // Observer speed in the inertial frame comes from Earth rotation only
+        let v_obs = 7.2921151467e-5 * obs_x.hypot(obs_y);
         let r_sat = (sat_ecf[0].powi(2) + sat_ecf[1].powi(2) + sat_ecf[2].powi(2)).sqrt();
         let r_obs = (obs_x * obs_x + obs_y * obs_y + obs_z * obs_z).sqrt();
-        relativistic_received_freq_hz(center_freq_hz, range_rate_kms, v_sat, r_obs, r_sat)
+        relativistic_received_freq_hz(center_freq_hz, range_rate_kms, v_sat, v_obs, r_obs, r_sat)
     } else {
         center_freq_hz - center_freq_hz * (range_rate_kms / c_kms)
     };
@@ -1189,8 +1212,7 @@ pub fn calculate_lunar_position_eci(time: DateTime<Utc>) -> [f64; 3] {
     // Distance in km
     let r_km = 385_001.0 - 20_905.0 * m_prime_rad.cos();
 
-    // Obliquity of the ecliptic (~23.439 degrees)
-    let eps_rad = 23.4393_f64.to_radians();
+    let eps_rad = mean_obliquity_rad(d);
 
     let x = r_km * beta.cos() * lambda.cos();
     let y = r_km * (beta.cos() * lambda.sin() * eps_rad.cos() - beta.sin() * eps_rad.sin());
@@ -1235,77 +1257,118 @@ pub fn find_transits(
             };
             let epoch_dt = DateTime::<Utc>::from_naive_utc_and_offset(elements.datetime, Utc);
 
-            for min_step in 0..total_minutes {
-                let current_time = start_time + chrono::Duration::minutes(min_step as i64);
-                let minutes_since_epoch =
-                    (current_time - epoch_dt).num_milliseconds() as f64 / 60000.0;
-
-                let prediction = match constants.propagate(minutes_since_epoch) {
-                    Ok(p) => p,
-                    Err(_) => continue,
-                };
-
-                let gmst = calculate_local_sidereal_time(current_time, 0.0);
-                let sat_ecf = eci_to_ecf(prediction.position, gmst);
-                let sat_look = ecf_to_look_angles(lat, lon, alt_km, sat_ecf);
-
+            // Angular separation (deg) and target elevation (deg) at `t`; None when SGP4 fails or
+            // either body is below the horizon.
+            let sample = |t: DateTime<Utc>| -> Option<(f64, f64)> {
+                let minutes_since_epoch = (t - epoch_dt).num_milliseconds() as f64 / 60000.0;
+                let prediction = constants.propagate(minutes_since_epoch).ok()?;
+                let gmst = calculate_local_sidereal_time(t, 0.0);
+                let sat_look =
+                    ecf_to_look_angles(lat, lon, alt_km, eci_to_ecf(prediction.position, gmst));
                 if sat_look.elevation <= 0.0 {
-                    continue;
+                    return None;
                 }
-
-                let target_ecf = match target {
-                    TransitTarget::Sun => {
-                        let sun_eci = calculate_sun_position_eci(current_time);
-                        eci_to_ecf(sun_eci, gmst)
-                    }
-                    TransitTarget::Moon => {
-                        let moon_eci = calculate_lunar_position_eci(current_time);
-                        eci_to_ecf(moon_eci, gmst)
-                    }
+                let target_eci = match target {
+                    TransitTarget::Sun => calculate_sun_position_eci(t),
+                    TransitTarget::Moon => calculate_lunar_position_eci(t),
                 };
-                let target_look = ecf_to_look_angles(lat, lon, alt_km, target_ecf);
-
+                let target_look =
+                    ecf_to_look_angles(lat, lon, alt_km, eci_to_ecf(target_eci, gmst));
                 if target_look.elevation <= 0.0 {
-                    continue;
+                    return None;
                 }
-
-                let sat_az_rad = sat_look.azimuth.to_radians();
-                let sat_el_rad = sat_look.elevation.to_radians();
-                let u_sat = [
-                    sat_el_rad.cos() * sat_az_rad.sin(),
-                    sat_el_rad.cos() * sat_az_rad.cos(),
-                    sat_el_rad.sin(),
-                ];
-
-                let tgt_az_rad = target_look.azimuth.to_radians();
-                let tgt_el_rad = target_look.elevation.to_radians();
-                let u_tgt = [
-                    tgt_el_rad.cos() * tgt_az_rad.sin(),
-                    tgt_el_rad.cos() * tgt_az_rad.cos(),
-                    tgt_el_rad.sin(),
-                ];
-
+                let unit = |az_deg: f64, el_deg: f64| {
+                    let (az, el) = (az_deg.to_radians(), el_deg.to_radians());
+                    [el.cos() * az.sin(), el.cos() * az.cos(), el.sin()]
+                };
+                let u_sat = unit(sat_look.azimuth, sat_look.elevation);
+                let u_tgt = unit(target_look.azimuth, target_look.elevation);
                 let dot = (u_sat[0] * u_tgt[0] + u_sat[1] * u_tgt[1] + u_sat[2] * u_tgt[2])
                     .clamp(-1.0, 1.0);
-                let sep_deg = dot.acos().to_degrees();
+                Some((dot.acos().to_degrees(), target_look.elevation))
+            };
+            let inside = |t: DateTime<Utc>| {
+                sample(t).is_some_and(|(sep, _)| sep <= max_angular_separation_deg)
+            };
+            let step_time = |m: usize| start_time + chrono::Duration::minutes(m as i64);
 
-                if sep_deg <= max_angular_separation_deg {
-                    let transit_center = current_time;
-                    let transit_start = current_time - chrono::Duration::seconds(1);
-                    let transit_end = current_time + chrono::Duration::seconds(1);
-                    let duration_sec = 2.0;
-
-                    matches.push(TransitMatch {
-                        satellite_id: sat.id,
-                        satellite_name: sat.name.clone(),
-                        transit_start_utc: transit_start,
-                        transit_center_utc: transit_center,
-                        transit_end_utc: transit_end,
-                        transit_duration_seconds: duration_sec,
-                        min_angular_separation_deg: (sep_deg * 1000.0).round() / 1000.0,
-                        target_elevation_deg: (target_look.elevation * 100.0).round() / 100.0,
-                    });
+            // Detection runs on a 1-minute grid. Each contiguous run of in-threshold samples is one
+            // transit whose edges and closest approach are then refined to ~0.1 s.
+            let mut run: Option<(usize, usize, usize, f64)> = None; // first, last, best, best_sep
+            let mut runs = Vec::new();
+            for min_step in 0..total_minutes {
+                let hit = sample(step_time(min_step))
+                    .filter(|(sep, _)| *sep <= max_angular_separation_deg)
+                    .map(|(sep, _)| sep);
+                match (hit, run.as_mut()) {
+                    (Some(sep), Some(r)) => {
+                        r.1 = min_step;
+                        if sep < r.3 {
+                            r.2 = min_step;
+                            r.3 = sep;
+                        }
+                    }
+                    (Some(sep), None) => run = Some((min_step, min_step, min_step, sep)),
+                    (None, _) => runs.extend(run.take()),
                 }
+            }
+            runs.extend(run.take());
+
+            for (first, last, best, _) in runs {
+                // Bisect the in/out boundary between an outside and an inside instant
+                let edge = |mut out: DateTime<Utc>, mut inn: DateTime<Utc>| {
+                    while (inn - out).num_milliseconds().abs() > 100 {
+                        let mid = out + (inn - out) / 2;
+                        if inside(mid) {
+                            inn = mid;
+                        } else {
+                            out = mid;
+                        }
+                    }
+                    inn
+                };
+                let one_min = chrono::Duration::minutes(1);
+                let transit_start = if first == 0 {
+                    step_time(0)
+                } else {
+                    edge(step_time(first) - one_min, step_time(first))
+                };
+                let transit_end = if last + 1 >= total_minutes {
+                    step_time(last)
+                } else {
+                    edge(step_time(last) + one_min, step_time(last))
+                };
+
+                // Ternary search for the closest approach within one minute of the best sample
+                let mut lo = (step_time(best) - one_min).max(transit_start);
+                let mut hi = (step_time(best) + one_min).min(transit_end);
+                let sep_at = |t| sample(t).map_or(f64::INFINITY, |(sep, _)| sep);
+                while (hi - lo).num_milliseconds() > 100 {
+                    let third = (hi - lo) / 3;
+                    let (m1, m2) = (lo + third, hi - third);
+                    if sep_at(m1) < sep_at(m2) {
+                        hi = m2;
+                    } else {
+                        lo = m1;
+                    }
+                }
+                let transit_center = lo + (hi - lo) / 2;
+                let Some((sep_deg, target_el)) = sample(transit_center) else {
+                    continue;
+                };
+
+                matches.push(TransitMatch {
+                    satellite_id: sat.id,
+                    satellite_name: sat.name.clone(),
+                    transit_start_utc: transit_start,
+                    transit_center_utc: transit_center,
+                    transit_end_utc: transit_end,
+                    transit_duration_seconds: (transit_end - transit_start).num_milliseconds()
+                        as f64
+                        / 1000.0,
+                    min_angular_separation_deg: (sep_deg * 1000.0).round() / 1000.0,
+                    target_elevation_deg: (target_el * 100.0).round() / 100.0,
+                });
             }
             matches
         })
@@ -1843,7 +1906,6 @@ pub fn calculate_satellite_state(
     let (latitude_deg, longitude_deg, altitude_km) = ecf_to_geodetic(pos_ecef);
 
     let mu = 398_600.441_8; // Earth gravitational parameter km^3 / s^2
-    let re = 6378.137; // WGS-84 radius km
     let OsculatingElements {
         semi_major_axis_km,
         eccentricity,
@@ -1856,8 +1918,12 @@ pub fn calculate_satellite_state(
 
     let orbital_period_minutes =
         (2.0 * std::f64::consts::PI * (semi_major_axis_km.powi(3) / mu).sqrt()) / 60.0;
-    let perigee_altitude_km = semi_major_axis_km * (1.0 - eccentricity) - re;
-    let apogee_altitude_km = semi_major_axis_km * (1.0 + eccentricity) - re;
+    let (perigee_altitude_km, apogee_altitude_km) = apsis_altitudes_km(
+        semi_major_axis_km,
+        eccentricity,
+        inclination_deg,
+        arg_of_perigee_deg,
+    );
 
     Ok(SatelliteStateResponse {
         satellite_id: satellite.id,
@@ -1897,12 +1963,15 @@ pub fn calculate_decay_risk(satellite: &Satellite) -> Result<SatelliteDecayRiskR
     )
     .map_err(|e| AppError::Sgp4Error(format!("Failed to parse TLE: {:?}", e)))?;
 
-    let re = 6378.137;
     let semi_major_axis = brouwer_mean_semi_major_axis_km(&elements);
 
     let ecc = elements.eccentricity;
-    let perigee_altitude_km = semi_major_axis * (1.0 - ecc) - re;
-    let apogee_altitude_km = semi_major_axis * (1.0 + ecc) - re;
+    let (perigee_altitude_km, apogee_altitude_km) = apsis_altitudes_km(
+        semi_major_axis,
+        ecc,
+        elements.inclination,
+        elements.argument_of_perigee,
+    );
     let bstar = elements.drag_term;
     let mean_motion_derivative = elements.mean_motion_dot * 2.0;
 

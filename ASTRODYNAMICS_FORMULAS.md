@@ -406,7 +406,7 @@ The Sun's position vector in ECI (mean equator and equinox of date $\approx$ TEM
    $$
 
 ### 4.2 Lunar Ephemeris (ECI)
-The Moon's position vector in ECI (mean equator and equinox of date $\approx$ TEME) is determined via Meeus analytical lunar expansions, with $d = d_{\text{TT}}$ (§2.1):
+The Moon's position vector in ECI (mean equator and equinox of date $\approx$ TEME) is determined via a truncated Meeus lunar expansion (Chapter 47 reduced to its leading term in each coordinate), with $d = d_{\text{TT}}$ (§2.1) and the obliquity $\epsilon$ of §4.1 step 5:
 1. Fundamental arguments:
    $$
    L' = (218.316^\circ + 13.176396^\circ \cdot d) \pmod{360^\circ} \quad (\text{Mean Longitude})
@@ -435,6 +435,8 @@ The Moon's position vector in ECI (mean equator and equinox of date $\approx$ TE
    R_{☾} (\cos\beta_{☾} \sin\lambda_{☾} \sin\epsilon + \sin\beta_{☾} \cos\epsilon)
    \end{bmatrix}
    $$
+
+**Accuracy.** Only the equation-of-centre term is kept. The largest neglected terms (Meeus Table 47.A/47.B) are the evection ($1.274^\circ$ in longitude, $\approx 3\,700\text{ km}$ in distance), the variation ($0.658^\circ$, $\approx 3\,000\text{ km}$), the $2M'$ term ($0.213^\circ$) and the annual equation ($0.186^\circ$), so the longitude error can reach $\sim 2^\circ$ and the distance error several thousand km. The Moon's angular diameter is $\approx 0.5^\circ$, so lunar transit results are screening-level only; use a full lunar theory or JPL ephemeris for event-grade timing.
 
 ### 4.3 Dual-Cone Solar Shadow Geometry (Umbra & Penumbra)
 To determine whether a satellite is in Earth's shadow without spherical cylinder simplifications:
@@ -497,6 +499,8 @@ $$
 $$
 
 A transit event occurs when $\Delta\theta \le \theta_{\text{threshold}}$ while both bodies have positive elevation above the local horizon.
+
+*Implementation:* detection samples $\Delta\theta$ on a 1-minute grid, so a transit shorter than the grid spacing can be missed unless $\theta_{\text{threshold}}$ is large enough to span it. Each run of consecutive in-threshold samples is reported as one transit. Its start and end are the boundaries of $\Delta\theta \le \theta_{\text{threshold}}$ (or elevation $\le 0$), found by bisection between the adjacent samples to $0.1\text{ s}$; its centre is the minimum of $\Delta\theta$ within one minute of the best sample (ternary search, $0.1\text{ s}$). A run touching the start or end of the forecast window is clipped to that window. Duration is end minus start.
 
 ---
 
@@ -719,12 +723,14 @@ T_{\text{period}} = \frac{2\pi \sqrt{a^3 / \mu_{\oplus}}}{60} \quad (\text{minut
 $$
 
 $$
-h_p = a(1 - e) - R_E \quad (\text{Perigee Altitude in km})
+h_p = a(1 - e) - R(\phi_{gc}) \quad (\text{Perigee Altitude in km})
 $$
 
 $$
-h_a = a(1 + e) - R_E \quad (\text{Apogee Altitude in km})
+h_a = a(1 + e) - R(\phi_{gc}) \quad (\text{Apogee Altitude in km})
 $$
+
+where $R(\phi_{gc})$ is the WGS-84 geocentric radius (§3.1) at the geocentric latitude of the apsides, $\sin\phi_{gc} = \pm\sin i \sin\omega$ (the perigee and apogee share one radius because $R$ is even in $\phi_{gc}$). Using the equatorial $R_E$ instead overstates altitude by up to $21\text{ km}$ for a polar perigee.
 
 ### 7.6 Non-Singular Angles for Circular & Equatorial Orbits
 For $e < 10^{-6}$ there is no perigee, so $\omega$ and $\nu$ are individually undefined; for $n < 10^{-8}$ ($i \approx 0^\circ$ or $180^\circ$) there is no ascending node, so $\Omega$ is undefined. Merely setting the undefined angle to $0^\circ$ discards the satellite's position along the orbit. The defined combined angle is computed instead, and folded into the nearest classical angle so that position remains recoverable:
@@ -776,13 +782,13 @@ $$
 - $\dot{\rho} < 0 \implies \Delta f > 0$ (Blue shift: satellite approaching, frequency increases).
 - $\dot{\rho} > 0 \implies \Delta f < 0$ (Red shift: satellite receding, frequency decreases).
 
-This is a classical approximation: the neglected second-order term is $\sim(\dot\rho/c)^2 \approx 6 \times 10^{-10}$ and the neglected transverse term is $\sim \beta^2/2 \approx 3 \times 10^{-10}$ for LEO. **Relativistic form** for high-fidelity RF work (X/Ku/Ka-band, where $\sim 10^{-10}$ is $\sim 1\text{--}10\text{ Hz}$), with $\beta = \|\vec{v}_{\text{sat, ECEF}}\|/c$ and the observer at rest in ECEF:
+This is a classical approximation: the neglected second-order term is $\sim(\dot\rho/c)^2 \approx 6 \times 10^{-10}$ and the neglected transverse term is $\sim \beta^2/2 \approx 3 \times 10^{-10}$ for LEO. **Relativistic form** for high-fidelity RF work (X/Ku/Ka-band, where $\sim 10^{-10}$ is $\sim 1\text{--}10\text{ Hz}$), with $\beta_s = \|\vec{v}_{\text{sat, ECI}}\|/c$ and $\beta_o = \omega_{\oplus}\sqrt{x_{\text{obs}}^2 + y_{\text{obs}}^2}/c$ the inertial-frame speeds of transmitter and observer ($\dot\rho$ is the same in ECEF and ECI because the observer is fixed to the rotating Earth):
 
 $$
-f_{\text{received}} = f_0 \, \frac{\sqrt{1 - \beta^2}}{1 + \dot{\rho}/c} \left[ 1 + \frac{\mu_{\oplus}}{c^2}\left( \frac{1}{r_{\text{obs}}} - \frac{1}{r_{\text{sat}}} \right) \right]
+f_{\text{received}} = f_0 \, \frac{\sqrt{1 - \beta_s^2}}{\sqrt{1 - \beta_o^2}\,(1 + \dot{\rho}/c)} \left[ 1 + \frac{\mu_{\oplus}}{c^2}\left( \frac{1}{r_{\text{obs}}} - \frac{1}{r_{\text{sat}}} \right) \right]
 $$
 
-where $\sqrt{1-\beta^2} = 1/\gamma_L$ is the inverse Lorentz factor (transverse Doppler / time dilation) and the bracket is the gravitational blue shift for a transmitter at greater geocentric radius than the receiver ($\sim 4 \times 10^{-11}$ for LEO). Light-time retardation (evaluating $\dot\rho$ at transmit time) and ionospheric/tropospheric delay are not modeled.
+where $\sqrt{1-\beta_s^2}/\sqrt{1-\beta_o^2}$ is the ratio of inverse Lorentz factors (transverse Doppler / time dilation of both ends) and the bracket is the gravitational blue shift for a transmitter at greater geocentric radius than the receiver ($\sim 4 \times 10^{-11}$ for LEO). Light-time retardation (evaluating $\dot\rho$ at transmit time) and ionospheric/tropospheric delay are not modeled.
 
 ---
 

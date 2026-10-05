@@ -786,10 +786,16 @@ pub async fn get_satellite_doppler(
 
     let relativistic = params.relativistic.unwrap_or(false);
 
-    let time_bucket = time.timestamp() / 10;
+    // Exact inputs: Doppler varies by tens of Hz per second, so no rounding or time bucketing
     let cache_key = format!(
-        "doppler:{}:{:.2}:{:.2}:{:.2}:{:.1}:{}:{}",
-        id, params.center_freq_hz, params.lat, params.lon, alt_km, time_bucket, relativistic
+        "doppler:{}:{}:{}:{}:{}:{}:{}",
+        id,
+        params.center_freq_hz,
+        params.lat,
+        params.lon,
+        alt_km,
+        time.timestamp_millis(),
+        relativistic
     );
 
     let res = repo

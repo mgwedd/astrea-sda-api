@@ -37,15 +37,17 @@ fn local_radius_matches_wgs84_closed_forms() {
     assert!((local_earth_radius_km(45.0) - 6367.489).abs() < 0.01);
 }
 
+// Independent oracle: R * acos(R / (R + h)) with WGS-84 radii evaluated outside the crate
+// (equator a, geodetic 45 deg 6367.4895 km, pole b), h = 500 km.
 #[test]
 fn footprint_radius_uses_local_radius() {
-    let h = 500.0;
-    for lat in [0.0, 45.0, 89.0] {
-        let r = local_earth_radius_km(lat);
-        let expected = r * (r / (r + h)).acos();
-        assert!((calculate_footprint_radius(h, lat) - expected).abs() < 1e-9);
+    for (lat, expected) in [(0.0, 2446.9500), (45.0, 2444.7818), (90.0, 2442.5933)] {
+        let got = calculate_footprint_radius(500.0, lat);
+        assert!(
+            (got - expected).abs() < 1e-3,
+            "lat {lat}: {got} vs {expected}"
+        );
     }
-    assert!(calculate_footprint_radius(h, 0.0) > calculate_footprint_radius(h, 90.0));
 }
 
 #[test]
@@ -205,7 +207,7 @@ fn relativistic_doppler_reduces_to_radial_closed_form() {
     let c = 299_792.458;
     let (f0, v) = (8.4e9, 7.6);
     for rr in [v, -v] {
-        let got = relativistic_received_freq_hz(f0, rr, v, 7000.0, 7000.0);
+        let got = relativistic_received_freq_hz(f0, rr, v, 0.0, 7000.0, 7000.0);
         let b = rr / c;
         let exact = f0 * ((1.0 - b) / (1.0 + b)).sqrt();
         assert!((got - exact).abs() < 1e-6, "{got} vs {exact}");
@@ -216,7 +218,76 @@ fn relativistic_doppler_reduces_to_radial_closed_form() {
 #[test]
 fn gravitational_shift_is_about_4e_minus_11_for_leo() {
     let f0 = 1.0e10;
-    let with = relativistic_received_freq_hz(f0, 0.0, 0.0, 6378.137, 6778.0);
+    let with = relativistic_received_freq_hz(f0, 0.0, 0.0, 0.0, 6378.137, 6778.0);
     let rel = with / f0 - 1.0;
     assert!((rel - 4.1e-11).abs() < 0.3e-11, "{rel}");
+}
+
+// Time dilation uses inertial speeds of both ends: sqrt((1 - bs^2) / (1 - bo^2)).
+#[test]
+fn relativistic_doppler_uses_inertial_speeds_of_transmitter_and_receiver() {
+    let c = 299_792.458;
+    let (f0, vs, vo) = (1.0e10, 7.6, 0.4651);
+    let got = relativistic_received_freq_hz(f0, 0.0, vs, vo, 7000.0, 7000.0);
+    let exact = f0 * ((1.0 - (vs / c).powi(2)) / (1.0 - (vo / c).powi(2))).sqrt();
+    assert!((got - exact).abs() < 1e-6, "{got} vs {exact}");
+}
+
+#[test]
+fn moon_uses_the_spec_obliquity() {
+    let t = Utc.with_ymd_and_hms(2024, 3, 24, 0, 0, 0).unwrap();
+    let d = julian_date_tt(t) - 2_451_545.0;
+    let [x, y, z] = calculate_lunar_position_eci(t);
+    let eps = mean_obliquity_rad(d);
+    assert!((mean_obliquity_rad(0.0).to_degrees() - 23.439).abs() < 1e-12);
+    // Rotating back to the ecliptic must give beta = 5.128 sin F exactly
+    let r = (x * x + y * y + z * z).sqrt();
+    let z_ecl = -y * eps.sin() + z * eps.cos();
+    let f = (93.272 + 13.229350 * d) % 360.0;
+    let beta_deg = (z_ecl / r).asin().to_degrees();
+    assert!(
+        (beta_deg - 5.128 * f.to_radians().sin()).abs() < 1e-9,
+        "{beta_deg}"
+    );
+}
+
+// A polar orbit with w = 90 deg has its perigee over the pole, so the reference radius is b.
+#[test]
+fn apsis_altitudes_use_local_radius() {
+    let (hp, ha) = apsis_altitudes_km(7000.0, 0.01, 90.0, 90.0);
+    assert!((hp - (7000.0 * 0.99 - 6_356.752_314)).abs() < 1e-3, "{hp}");
+    assert!((ha - (7000.0 * 1.01 - 6_356.752_314)).abs() < 1e-3, "{ha}");
+    // Equatorial orbit: apsides on the equator, radius a
+    let (hp, _) = apsis_altitudes_km(7000.0, 0.01, 0.0, 45.0);
+    assert!((hp - (7000.0 * 0.99 - 6378.137)).abs() < 1e-9);
+}
+
+// Transit edges and centre are computed, not synthesized: ordered, consistent, and not the old
+// fixed +/-1 s window.
+#[test]
+fn transit_times_are_refined_from_the_geometry() {
+    use astrea_sda_api::models::{Satellite, Tle, TransitTarget};
+    let sat = Satellite {
+        id: uuid::Uuid::new_v4(),
+        name: "ISS".into(),
+        tle: Tle {
+            line_one: "1 25544U 98067A   24083.89679124  .00014815  00000+0  26815-3 0  9996"
+                .into(),
+            line_two: "2 25544  51.6416 195.9189 0004543  98.7845 261.3938 15.49814442445012"
+                .into(),
+        },
+        created_date: Utc::now(),
+        last_modified_date: Utc::now(),
+    };
+    let start = Utc.with_ymd_and_hms(2024, 3, 24, 0, 0, 0).unwrap();
+    let res = find_transits(TransitTarget::Sun, &[sat], 30.0, -97.0, 0.1, start, 7, 60.0).unwrap();
+    assert!(res.transits_found > 0);
+    for m in &res.results {
+        assert!(m.transit_start_utc <= m.transit_center_utc);
+        assert!(m.transit_center_utc <= m.transit_end_utc);
+        let span = (m.transit_end_utc - m.transit_start_utc).num_milliseconds() as f64 / 1000.0;
+        assert!((m.transit_duration_seconds - span).abs() < 1e-9);
+        assert!(m.min_angular_separation_deg <= 60.0);
+    }
+    assert!(res.results.iter().any(|m| m.transit_duration_seconds > 2.0));
 }
