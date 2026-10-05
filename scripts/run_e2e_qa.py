@@ -343,13 +343,6 @@ def run_suite(api_url, profile_name, has_redis=False):
     else:
         log_fail("Canonical Overhead calculation", f"Status: {st}, Body: {b}")
 
-    # Alias /v1/astrodynamics/overhead
-    st, _, b = http_req("GET", f"{api_url}/v1/astrodynamics/overhead?lat=13.923&lon=177.315&time=2021-08-27T16:00:00Z", headers={"Authorization": f"Bearer {dev_viewer_token}"})
-    if st == 200 and isinstance(b, dict) and "satellite" in b:
-        log_pass("Backwards-Compatible Alias Query (GET /v1/astrodynamics/overhead)")
-    else:
-        log_fail("Alias Overhead calculation", f"Status: {st}")
-
     if sat_id:
         # Next visible pass
         st, _, b = http_req("GET", f"{api_url}/v1/satellites/{sat_id}/next-visible?lat=13.923&lon=177.315&threshold_deg=5", headers={"Authorization": f"Bearer {dev_viewer_token}"})

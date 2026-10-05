@@ -434,7 +434,7 @@ curl -s -X POST http://localhost:8080/v1/auth/token \
 *(Note: Ensure at least one active satellite exists before running astrodynamics calculations. Re-create the ISS record using TC-SAT-01 if deleted).*
 
 #### TC-ASTRO-01: Observer Overhead Satellites (`GET /v1/satellites/overhead`)
-- **Route**: Canonical `/v1/satellites/overhead` (alias: `/v1/astrodynamics/overhead`).
+- **Route**: Canonical `/v1/satellites/overhead`.
 - **RBAC**: Requires `viewer`, `editor`, or `admin`.
 - **Query Parameters**:
   - `lat`: `37.7749` (San Francisco, CA)
@@ -448,7 +448,6 @@ curl -s -X POST http://localhost:8080/v1/auth/token \
   ```
 - **Expected Status**: `200 OK`
 - **Verification**: Response contains `satellite` object and `elevation` in degrees.
-- **Backwards-Compatibility Verification**: Call `/v1/astrodynamics/overhead?lat=37.7749&lon=-122.4194&alt=15.0` with `$VIEWER_TOKEN`. Verify `200 OK`.
 - **Negative Case**: Call without token. Expected: `401 Unauthorized`.
 
 #### TC-ASTRO-02: Next Visible Pass (`GET /v1/satellites/{id}/next-visible`)
