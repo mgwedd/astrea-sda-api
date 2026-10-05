@@ -445,11 +445,12 @@ pub async fn get_overhead(
 
     let time = params.time.unwrap_or_else(Utc::now);
     let alt = params.alt.unwrap_or(0.0);
-    let time_bucket = time.timestamp() / 10; // Round time to 10-second buckets for cache reuse
-
     let cache_key = format!(
-        "overhead:{:.2}:{:.2}:{:.1}:{}",
-        params.lat, params.lon, alt, time_bucket
+        "overhead:{}:{}:{}:{}",
+        params.lat,
+        params.lon,
+        alt,
+        time.timestamp_millis()
     );
 
     let res = repo
@@ -508,7 +509,7 @@ pub async fn get_next_visible(
     let time_bucket = start_time.timestamp() / 60; // Round start time to 1-minute bucket for cache reuse
 
     let cache_key = format!(
-        "next_visible:{}:{:.2}:{:.2}:{:.1}:{:.1}:{}",
+        "next_visible:{}:{}:{}:{}:{}:{}",
         id, params.lat, params.lon, alt, threshold, time_bucket
     );
 
@@ -569,7 +570,6 @@ pub async fn get_ground_track(
         _ => (true, false),
     };
 
-    let time_bucket = start_time.timestamp() / 60;
     let cache_key = format!(
         "groundtrack:{}:{}:{}:{}:{}:{}:{}",
         id,
@@ -577,7 +577,7 @@ pub async fn get_ground_track(
         step_seconds,
         include_geojson,
         include_czml,
-        time_bucket,
+        start_time.timestamp_millis(),
         satellite.last_modified_date.timestamp()
     );
 
@@ -648,10 +648,13 @@ pub async fn get_satellite_illumination(
     let time = params.time.unwrap_or_else(Utc::now);
     let alt = params.alt.unwrap_or(0.0);
 
-    let time_bucket = time.timestamp() / 10;
     let cache_key = format!(
-        "illumination:{}:{:.2}:{:.2}:{:.1}:{}",
-        id, params.lat, params.lon, alt, time_bucket
+        "illumination:{}:{}:{}:{}:{}",
+        id,
+        params.lat,
+        params.lon,
+        alt,
+        time.timestamp_millis()
     );
 
     let res = repo
@@ -709,7 +712,7 @@ pub async fn search_conjunctions(
 
     let time_bucket = start_time.timestamp() / 60;
     let cache_key = format!(
-        "conjunctions:{}:{:.1}:{}:{}",
+        "conjunctions:{}:{}:{}:{}",
         satellites.len(),
         max_distance_km,
         duration_hours,
@@ -1032,10 +1035,16 @@ pub async fn get_satellite_passes(
     let days = params.duration_days.unwrap_or(3).clamp(1, 14);
     let visible_only = params.visible_only.unwrap_or(false);
 
-    let time_bucket = start_time.timestamp() / 60;
     let cache_key = format!(
-        "passes:{}:{:.2}:{:.2}:{:.1}:{:.1}:{}:{}:{}",
-        id, params.lat, params.lon, alt, threshold, days, visible_only, time_bucket
+        "passes:{}:{}:{}:{}:{}:{}:{}:{}",
+        id,
+        params.lat,
+        params.lon,
+        alt,
+        threshold,
+        days,
+        visible_only,
+        start_time.timestamp_millis()
     );
 
     let res = repo
@@ -1097,10 +1106,13 @@ pub async fn get_relative_motion(
     let dur_mins = params.duration_minutes.unwrap_or(0);
     let step_secs = params.step_seconds.unwrap_or(60);
 
-    let time_bucket = epoch.timestamp() / 10;
     let cache_key = format!(
         "relmotion:{}:{}:{}:{}:{}",
-        id, params.target_id, dur_mins, step_secs, time_bucket
+        id,
+        params.target_id,
+        dur_mins,
+        step_secs,
+        epoch.timestamp_millis()
     );
 
     let res = repo
@@ -1153,8 +1165,7 @@ pub async fn get_satellite_state(
     let satellite = repo.get_satellite_by_id(id).await?;
     let epoch = params.epoch.unwrap_or_else(Utc::now);
 
-    let time_bucket = epoch.timestamp() / 10;
-    let cache_key = format!("state:{}:{}", id, time_bucket);
+    let cache_key = format!("state:{}:{}", id, epoch.timestamp_millis());
 
     let res = repo
         .cache
@@ -1252,7 +1263,7 @@ pub async fn get_decay_watch(
 
     let time_bucket = Utc::now().timestamp() / 60;
     let cache_key = format!(
-        "decay_watch:{}:{:.1}:{}:{}",
+        "decay_watch:{}:{}:{}:{}",
         satellites.len(),
         max_perigee,
         limit,
