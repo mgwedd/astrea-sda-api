@@ -144,8 +144,8 @@ jobs:
         uses: mathieudutour/github-tag-action@v7
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          default_bump: patch
-          custom_release_rules: 'fix:patch,chore:patch:Maintenance,docs:patch:Documentation,refactor:patch,perf:patch,style:patch,build:patch,ci:patch,test:patch,feat:minor'
+          default_bump: false
+          custom_release_rules: 'feat:minor,fix:patch,perf:patch'
           parse_squash_commits: true
           release_branches: 'main'
           dry_run: true
@@ -172,6 +172,13 @@ jobs:
           # 2. Automated push to main handling
           RELEASE_TYPE="${{ steps.analyze_version.outputs.release_type }}"
           echo "Detected conventional commit release type: $RELEASE_TYPE"
+
+          # No feat/fix/perf/breaking commits since the last tag: no release (ci/docs/chore/etc. never release).
+          if [ -z "$RELEASE_TYPE" ]; then
+            echo "No release-worthy conventional commits (feat/fix/perf/breaking). Skipping release."
+            echo "skip_sdk_build=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
           
           # Check for breaking indicators in conventional commits
           if [ "$RELEASE_TYPE" = "major" ]; then
@@ -211,8 +218,8 @@ jobs:
         uses: mathieudutour/github-tag-action@v7
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          default_bump: patch
-          custom_release_rules: 'fix:patch,chore:patch:Maintenance,docs:patch:Documentation,refactor:patch,perf:patch,style:patch,build:patch,ci:patch,test:patch,feat:minor'
+          default_bump: false
+          custom_release_rules: 'feat:minor,fix:patch,perf:patch'
           parse_squash_commits: true
           release_branches: 'main'
 
