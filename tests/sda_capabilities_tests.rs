@@ -400,3 +400,55 @@ async fn test_sda_api_endpoints_integration() {
     assert!(pc_res["collisionProbability"].as_f64().unwrap() > 0.0);
     assert_eq!(pc_res["riskCategory"], "Critical (Pc >= 1e-4)");
 }
+
+/// Independent WGS-84 radius at geocentric latitude (literals, not crate helpers).
+fn wgs84_radius_km(phi_gc_rad: f64) -> f64 {
+    let (a, b) = (6378.137_f64, 6_356.752_314_245_f64);
+    let (s, c) = phi_gc_rad.sin_cos();
+    a * b / (b * b * c * c + a * a * s * s).sqrt()
+}
+
+// ISS: i = 51.64, w ~ 98.8 -> apsides near 50.8 deg geocentric latitude, ~10 km below R_E.
+#[test]
+fn state_apsis_altitudes_use_radius_at_apsis_latitude() {
+    let iss = mock_sat("ISS (ZARYA)", ISS_LINE1, ISS_LINE2);
+    let t = Utc.with_ymd_and_hms(2024, 3, 23, 21, 31, 0).unwrap();
+    let st = calculate_satellite_state(&iss, t).unwrap();
+    let k = &st.keplerian_elements;
+    let phi =
+        (k.inclination_deg.to_radians().sin() * k.arg_of_perigee_deg.to_radians().sin()).asin();
+    let r = wgs84_radius_km(phi);
+    assert!(6378.137 - r > 5.0, "test must discriminate from R_E: {r}");
+    let hp = k.semi_major_axis_km * (1.0 - k.eccentricity) - r;
+    let ha = k.semi_major_axis_km * (1.0 + k.eccentricity) - r;
+    // outputs are rounded to 0.01 km and inputs to ~1e-4, so allow 0.05 km
+    assert!(
+        (k.perigee_altitude_km - hp).abs() < 0.05,
+        "{} vs {hp}",
+        k.perigee_altitude_km
+    );
+    assert!(
+        (k.apogee_altitude_km - ha).abs() < 0.05,
+        "{} vs {ha}",
+        k.apogee_altitude_km
+    );
+}
+
+#[test]
+fn decay_risk_perigee_uses_radius_at_apsis_latitude() {
+    use astrea_sda_api::services::astrodynamics::{
+        brouwer_mean_semi_major_axis_km, normalize_tle_line,
+    };
+    use sgp4::Elements;
+    let iss = mock_sat("ISS (ZARYA)", ISS_LINE1, ISS_LINE2);
+    let l1 = normalize_tle_line(&iss.tle.line_one, '1');
+    let l2 = normalize_tle_line(&iss.tle.line_two, '2');
+    let el = Elements::from_tle(None, l1.as_bytes(), l2.as_bytes()).unwrap();
+    let a = brouwer_mean_semi_major_axis_km(&el);
+    let phi =
+        (el.inclination.to_radians().sin() * el.argument_of_perigee.to_radians().sin()).asin();
+    let r = wgs84_radius_km(phi);
+    let res = calculate_decay_risk(&iss).unwrap();
+    assert!((res.perigee_altitude_km - (a * (1.0 - el.eccentricity) - r)).abs() < 0.06);
+    assert!((res.apogee_altitude_km - (a * (1.0 + el.eccentricity) - r)).abs() < 0.06);
+}
