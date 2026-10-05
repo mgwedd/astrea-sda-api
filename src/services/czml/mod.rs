@@ -7,6 +7,7 @@ use crate::error::AppError;
 use crate::models::{GroundTrackPoint, Satellite, SatellitePass};
 use crate::services::ephemeris::Ephemeris;
 use serde_json::{json, Value};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 /// Largest sample spacing for which degree-5 Lagrange stays under ~1 m for
@@ -76,13 +77,17 @@ const PASS_STEP_SECS: usize = 30;
 /// One entity per pass, sampled over [AOS, LOS] (re-propagated; passes carry
 /// events only). Pass count and window follow the passes endpoint, not the
 /// scene caps.
-pub fn passes_document(satellite: &Satellite, passes: &[SatellitePass]) -> Result<Value, AppError> {
+pub fn passes_document(
+    satellite: &Satellite,
+    passes: &[SatellitePass],
+    cancel: &CancellationToken,
+) -> Result<Value, AppError> {
     let eph = Ephemeris::from_satellite(satellite)?;
     let tracks = passes
         .iter()
         .map(|p| {
             let span = (p.los_time - p.aos_time).num_seconds().max(1) as usize;
-            let mut points = eph.range(p.aos_time, span, PASS_STEP_SECS)?.points;
+            let mut points = eph.range(p.aos_time, span, PASS_STEP_SECS, cancel)?.points;
             // range() floors span/step; make sure the track ends exactly at LOS.
             if points.last().is_some_and(|l| l.timestamp < p.los_time) {
                 points.extend(eph.at(p.los_time));
@@ -136,9 +141,10 @@ mod tests {
             last_modified_date: Utc::now(),
         };
         let t0 = Utc.with_ymd_and_hms(2024, 3, 25, 0, 0, 0).unwrap();
-        let sched = find_pass_schedule(&sat, 40.0, -75.0, 0.0, t0, 5.0, 1, false).unwrap();
+        let live = CancellationToken::new();
+        let sched = find_pass_schedule(&sat, 40.0, -75.0, 0.0, t0, 5.0, 1, false, &live).unwrap();
         assert!(!sched.passes.is_empty());
-        let doc = passes_document(&sat, &sched.passes).unwrap();
+        let doc = passes_document(&sat, &sched.passes, &live).unwrap();
         let doc = doc.as_array().unwrap();
         assert_eq!(doc.len(), sched.passes.len() + 1);
         let pass = &sched.passes[0];

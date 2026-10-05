@@ -2,6 +2,7 @@
 //! transforms_reference_tests against an ERFA oracle; these tests cover what the
 //! CZML layer adds: units/epoch encoding, and the error of the degree-5 Lagrange
 //! interpolation Cesium is told to use, vs 1 s samples of the same ephemeris.
+use tokio_util::sync::CancellationToken;
 
 use astrea_sda_api::models::{Satellite, Tle};
 use astrea_sda_api::services::astrodynamics::generate_ground_track;
@@ -42,10 +43,11 @@ fn lagrange(nodes: &[(f64, [f64; 3])], t: f64) -> [f64; 3] {
 fn max_err_m(step: usize) -> f64 {
     let t0 = Utc.with_ymd_and_hms(2024, 3, 25, 12, 0, 0).unwrap();
     let sat = iss();
-    let truth = generate_ground_track(&sat, t0, 30, 1, false, false)
+    let truth = generate_ground_track(&sat, t0, 30, 1, false, false, &CancellationToken::new())
         .unwrap()
         .trajectory;
-    let coarse = generate_ground_track(&sat, t0, 30, step, false, true).unwrap();
+    let coarse =
+        generate_ground_track(&sat, t0, 30, step, false, true, &CancellationToken::new()).unwrap();
     let cart = coarse.czml.unwrap()[1]["position"]["cartesian"]
         .as_array()
         .unwrap()
@@ -74,7 +76,8 @@ fn max_err_m(step: usize) -> f64 {
 #[test]
 fn encodes_metres_and_second_offsets_from_epoch() {
     let t0 = Utc.with_ymd_and_hms(2024, 3, 25, 12, 0, 0).unwrap();
-    let r = generate_ground_track(&iss(), t0, 10, 30, false, true).unwrap();
+    let r =
+        generate_ground_track(&iss(), t0, 10, 30, false, true, &CancellationToken::new()).unwrap();
     let doc = r.czml.unwrap();
     assert_eq!(doc[0]["clock"]["currentTime"], "2024-03-25T12:00:00.000Z");
     let pos = &doc[1]["position"];

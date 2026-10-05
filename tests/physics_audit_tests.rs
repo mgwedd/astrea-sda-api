@@ -5,6 +5,7 @@ use astrea_sda_api::{
     services::astrodynamics::*,
 };
 use chrono::{DateTime, Duration, TimeZone, Utc};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 fn sat(name: &str, l1: &str, l2: &str) -> Satellite {
@@ -86,7 +87,16 @@ fn a03_sun_position_matches_equinox_geometry() {
 
 #[test]
 fn a04_ground_track_subpoint_matches_skyfield() {
-    let gt = generate_ground_track(&atlas(), t0(), 1, 60, false, false).unwrap();
+    let gt = generate_ground_track(
+        &atlas(),
+        t0(),
+        1,
+        60,
+        false,
+        false,
+        &CancellationToken::new(),
+    )
+    .unwrap();
     let p = &gt.trajectory[0];
     assert!((p.lat - SUB_LAT).abs() < 0.05, "lat {} vs {SUB_LAT}", p.lat);
     assert!(
@@ -234,7 +244,16 @@ fn a15_conjunction_not_missed_by_coarse_sampling() {
 
 #[test]
 fn a16_czml_time_tags_match_trajectory_timestamps() {
-    let gt = generate_ground_track(&atlas(), t0(), 10, 60, false, true).unwrap();
+    let gt = generate_ground_track(
+        &atlas(),
+        t0(),
+        10,
+        60,
+        false,
+        true,
+        &CancellationToken::new(),
+    )
+    .unwrap();
     let czml = gt.czml.unwrap();
     let cart = czml[1]["position"]["cartesian"].as_array().unwrap();
     for (i, p) in gt.trajectory.iter().enumerate() {
@@ -265,7 +284,16 @@ fn a18_next_pass_finds_pass_shorter_than_sample_step() {
 
 #[test]
 fn a19_footprint_is_instantaneous_and_omitted_when_ring_is_not_simple() {
-    let gt = generate_ground_track(&atlas(), t0(), 90, 60, true, false).unwrap();
+    let gt = generate_ground_track(
+        &atlas(),
+        t0(),
+        90,
+        60,
+        true,
+        false,
+        &CancellationToken::new(),
+    )
+    .unwrap();
     assert_eq!(
         gt.footprint_radius_km,
         calculate_footprint_radius(gt.trajectory[0].alt_km, gt.trajectory[0].lat)

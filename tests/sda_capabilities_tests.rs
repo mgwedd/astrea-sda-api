@@ -56,9 +56,15 @@ fn test_pass_schedule_calculation() {
 
     // Ground station: Austin, TX (30.2672° N, -97.7431° E)
     let res: PassScheduleResponse = find_pass_schedule(
-        &iss, 30.2672, -97.7431, 150.0, start_time, 5.0,   // 5 deg threshold
+        &iss,
+        30.2672,
+        -97.7431,
+        150.0,
+        start_time,
+        5.0,   // 5 deg threshold
         7,     // 7 days
         false, // all passes
+        &tokio_util::sync::CancellationToken::new(),
     )
     .expect("Pass schedule calculation failed");
 

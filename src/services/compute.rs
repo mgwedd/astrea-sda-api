@@ -6,9 +6,31 @@ use moka::future::Cache as MokaCache;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{oneshot, Semaphore};
+use tokio::sync::{oneshot, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
+
+/// Concurrent in-flight jobs per non-admin user; further requests are rejected, not queued.
+const USER_QUOTA: usize = 3;
+pub const QUOTA_EXCEEDED: &str = "User quota exceeded";
+
+/// Holds one slot of a user's quota. On drop the user's semaphore is evicted once idle,
+/// so `user_limits` holds only users with work in flight.
+struct UserPermit {
+    permit: Option<OwnedSemaphorePermit>,
+    limits: Arc<DashMap<String, Arc<Semaphore>>>,
+    user_id: String,
+}
+
+impl Drop for UserPermit {
+    fn drop(&mut self) {
+        drop(self.permit.take());
+        // Acquisition happens under the same shard lock (see `acquire_user`), so an
+        // idle semaphore cannot gain a holder between this check and the removal.
+        self.limits
+            .remove_if(&self.user_id, |_, s| s.available_permits() == USER_QUOTA);
+    }
+}
 
 #[derive(Clone)]
 pub struct AstreaComputeEngine {
@@ -111,6 +133,23 @@ impl AstreaComputeEngine {
         Ok(estimated_ms)
     }
 
+    fn acquire_user(&self, user_id: String) -> Result<UserPermit, String> {
+        // `try_acquire` runs while the entry's shard lock is held; see `UserPermit::drop`.
+        let permit = self
+            .user_limits
+            .entry(user_id.clone())
+            .or_insert_with(|| Arc::new(Semaphore::new(USER_QUOTA)))
+            .value()
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| QUOTA_EXCEEDED.to_string())?;
+        Ok(UserPermit {
+            permit: Some(permit),
+            limits: self.user_limits.clone(),
+            user_id,
+        })
+    }
+
     /// Per-user quota, swimlane choice, Rayon handoff and timeout, with no caching.
     /// Outer `Err` is an engine failure (quota, capacity, timeout, panic); the
     /// closure's own result comes back untouched in the inner `Result`.
@@ -128,16 +167,7 @@ impl AstreaComputeEngine {
     {
         // User identity quota (role == "admin" bypasses the user semaphore)
         let _user_permit = if user_role != "admin" {
-            let sem = self
-                .user_limits
-                .entry(user_id)
-                .or_insert_with(|| Arc::new(Semaphore::new(3)))
-                .clone();
-            Some(
-                sem.acquire_owned()
-                    .await
-                    .map_err(|_| "User quota exceeded".to_string())?,
-            )
+            Some(self.acquire_user(user_id)?)
         } else {
             None
         };
@@ -233,7 +263,12 @@ impl AstreaComputeEngine {
             .await;
 
         result.map_err(|e: std::sync::Arc<String>| {
-            (StatusCode::INTERNAL_SERVER_ERROR, e.as_ref().clone())
+            let status = if e.as_str() == QUOTA_EXCEEDED {
+                StatusCode::TOO_MANY_REQUESTS
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (status, e.as_ref().clone())
         })
     }
 }

@@ -122,3 +122,86 @@ async fn run_executes_on_rayon_express_pool_and_returns_inner_error_untouched() 
         .unwrap();
     assert_eq!(inner, Err("bad"));
 }
+
+fn block_until_cancelled(
+    started: Arc<AtomicUsize>,
+    stopped: Arc<AtomicUsize>,
+) -> impl FnOnce(tokio_util::sync::CancellationToken) -> Result<(), ()> + Send + 'static {
+    move |token| {
+        started.fetch_add(1, Ordering::SeqCst);
+        while !token.is_cancelled() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        stopped.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+async fn wait_for(cond: impl Fn() -> bool) {
+    for _ in 0..400 {
+        if cond() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("condition not reached in 2 s");
+}
+
+#[tokio::test]
+async fn user_quota_rejects_instead_of_queueing_and_evicts_idle_users() {
+    // More express slots than the 3 held jobs, so the other callers reach the quota check.
+    let engine = AstreaComputeEngine::new(&ServerConfig {
+        express_cores: 8,
+        ..ServerConfig::from_env()
+    });
+    let (started, stopped) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+
+    // Hold the user's 3 slots with jobs that run until cancelled.
+    let held: Vec<_> = (0..3)
+        .map(|_| {
+            let (e, s, d) = (engine.clone(), started.clone(), stopped.clone());
+            tokio::spawn(async move {
+                e.run(1, "u".into(), "viewer".into(), block_until_cancelled(s, d))
+                    .await
+            })
+        })
+        .collect();
+    wait_for(|| started.load(Ordering::SeqCst) == 3).await;
+
+    let over = engine
+        .run(1, "u".into(), "viewer".into(), |_| Ok::<_, ()>(()))
+        .await;
+    assert_eq!(over.err().as_deref(), Some("User quota exceeded"));
+
+    // Another user and an admin are unaffected.
+    assert!(engine
+        .run(1, "other".into(), "viewer".into(), |_| Ok::<_, ()>(()))
+        .await
+        .is_ok());
+    assert!(engine
+        .run(1, "u".into(), "admin".into(), |_| Ok::<_, ()>(()))
+        .await
+        .is_ok());
+
+    // Dropping the callers cancels the jobs, frees the slots and evicts the idle users.
+    for h in &held {
+        h.abort();
+    }
+    wait_for(|| stopped.load(Ordering::SeqCst) == 3).await;
+    wait_for(|| engine.user_limits.is_empty()).await;
+}
+
+#[tokio::test]
+async fn dropping_the_caller_cancels_a_running_job() {
+    let engine = AstreaComputeEngine::new(&ServerConfig::from_env());
+    let (started, stopped) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let (e, s, d) = (engine.clone(), started.clone(), stopped.clone());
+    let h = tokio::spawn(async move {
+        e.run(1, "u".into(), "viewer".into(), block_until_cancelled(s, d))
+            .await
+    });
+    wait_for(|| started.load(Ordering::SeqCst) == 1).await;
+    assert_eq!(stopped.load(Ordering::SeqCst), 0);
+    h.abort();
+    wait_for(|| stopped.load(Ordering::SeqCst) == 1).await;
+}

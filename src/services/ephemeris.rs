@@ -9,11 +9,17 @@ use crate::services::astrodynamics::{
 };
 use chrono::{DateTime, Duration, Utc};
 use sgp4::{Constants, Elements};
+use tokio_util::sync::CancellationToken;
 
 /// Longest span of a single sampled track.
 pub const MAX_SPAN_SECS: usize = 24 * 3600;
 /// Most samples in a single track.
 pub const MAX_SAMPLES: usize = 2000;
+
+/// Error returned by compute that observed its token fire; the caller has already gone.
+pub fn cancelled() -> AppError {
+    AppError::InternalServerError("cancelled".into())
+}
 
 pub struct Ephemeris {
     constants: Constants,
@@ -89,17 +95,23 @@ impl Ephemeris {
     }
 
     /// Samples `start ..= start + span_secs` every `step_secs`. Rejects
-    /// requests over `MAX_SPAN_SECS` / `MAX_SAMPLES` rather than clamping.
+    /// requests over `MAX_SPAN_SECS` / `MAX_SAMPLES` rather than clamping, and
+    /// stops with `cancelled()` once `cancel` fires.
     pub fn range(
         &self,
         start: DateTime<Utc>,
         span_secs: usize,
         step_secs: usize,
+        cancel: &CancellationToken,
     ) -> Result<Samples, AppError> {
         let n = Self::check_range(span_secs, step_secs)?;
-        let points: Vec<_> = (0..n)
-            .filter_map(|i| self.at(start + Duration::seconds((i * step_secs) as i64)))
-            .collect();
+        let mut points = Vec::with_capacity(n);
+        for i in 0..n {
+            if cancel.is_cancelled() {
+                return Err(cancelled());
+            }
+            points.extend(self.at(start + Duration::seconds((i * step_secs) as i64)));
+        }
         Ok(Samples {
             dropped: n - points.len(),
             points,
@@ -132,8 +144,20 @@ mod tests {
     fn rejects_over_cap_instead_of_clamping() {
         let e = eph();
         let t = Utc.with_ymd_and_hms(2024, 3, 25, 12, 0, 0).unwrap();
-        assert!(e.range(t, MAX_SPAN_SECS + 1, 60).is_err());
-        assert!(e.range(t, 3600, 1).is_err()); // 3601 samples
-        assert!(e.range(t, 3600, 60).is_ok());
+        let live = CancellationToken::new();
+        assert!(e.range(t, MAX_SPAN_SECS + 1, 60, &live).is_err());
+        assert!(e.range(t, 3600, 1, &live).is_err()); // 3601 samples
+        assert!(e.range(t, 3600, 60, &live).is_ok());
+    }
+
+    #[test]
+    fn stops_when_cancelled() {
+        let t = Utc.with_ymd_and_hms(2024, 3, 25, 12, 0, 0).unwrap();
+        let token = CancellationToken::new();
+        token.cancel();
+        assert!(matches!(
+            eph().range(t, 3600, 60, &token),
+            Err(AppError::InternalServerError(m)) if m == "cancelled"
+        ));
     }
 }

@@ -12,6 +12,7 @@ use crate::models::{
 };
 use crate::pagination::{PaginatedResponse, PaginationQuery};
 use crate::repository::SatelliteRepository;
+use crate::services::compute::QUOTA_EXCEEDED;
 use crate::services::ephemeris::Ephemeris;
 use crate::services::pipeline::{CelesTrakGroup, DiscoveryPipeline};
 use crate::services::{astrodynamics, czml, maneuver};
@@ -167,6 +168,8 @@ fn map_calculation_error(e: String) -> AppError {
         || e.contains("Failed to parse TLE")
     {
         AppError::Sgp4Error(e)
+    } else if e == QUOTA_EXCEEDED {
+        AppError::TooManyRequests(e)
     } else {
         AppError::InternalServerError(e)
     }
@@ -556,6 +559,7 @@ pub async fn get_next_visible(
         (status = 200, description = "3D Ground Track and GeoJSON trajectory", body = GroundTrackResponse),
         (status = 401, description = "Unauthorized - Missing or invalid JWT token", body = ErrorResponse),
         (status = 404, description = "Satellite not found", body = ErrorResponse),
+        (status = 429, description = "Per-user compute quota (3 concurrent jobs) exceeded; retry when one finishes", body = ErrorResponse),
         (status = 500, description = "Internal calculation error", body = ErrorResponse)
     ),
     security(("bearer_auth" = [])),
@@ -606,7 +610,7 @@ pub async fn get_ground_track(
                     ((samples as f64 * SAMPLE_COST_MS).ceil() as u64).max(1),
                     user_id,
                     role,
-                    move |_| {
+                    move |cancel| {
                         astrodynamics::generate_ground_track(
                             &satellite,
                             start_time,
@@ -614,6 +618,7 @@ pub async fn get_ground_track(
                             step_seconds,
                             include_geojson,
                             include_czml,
+                            &cancel,
                         )
                     },
                 )
@@ -1037,7 +1042,8 @@ pub async fn get_lunar_transits(
     responses(
         (status = 200, description = "Satellite pass schedule computed successfully", body = PassScheduleResponse),
         (status = 401, description = "Unauthorized - Missing or invalid JWT token", body = ErrorResponse),
-        (status = 404, description = "Satellite not found", body = ErrorResponse)
+        (status = 404, description = "Satellite not found", body = ErrorResponse),
+        (status = 429, description = "Per-user compute quota (3 concurrent jobs) exceeded; retry when one finishes", body = ErrorResponse)
     ),
     security(("bearer_auth" = [])),
     tag = "Satellites"
@@ -1079,22 +1085,29 @@ pub async fn get_satellite_passes(
         .cache
         .get_or_insert_with(&cache_key, || async move {
             let pass_res = engine
-                .run(PASS_DAY_COST_MS * days as u64, user_id, role, move |_| {
-                    let mut res = astrodynamics::find_pass_schedule(
-                        &satellite,
-                        params.lat,
-                        params.lon,
-                        alt,
-                        start_time,
-                        threshold,
-                        days,
-                        visible_only,
-                    )?;
-                    if include_czml {
-                        res.czml = Some(czml::passes_document(&satellite, &res.passes)?);
-                    }
-                    Ok::<_, AppError>(res)
-                })
+                .run(
+                    PASS_DAY_COST_MS * days as u64,
+                    user_id,
+                    role,
+                    move |cancel| {
+                        let mut res = astrodynamics::find_pass_schedule(
+                            &satellite,
+                            params.lat,
+                            params.lon,
+                            alt,
+                            start_time,
+                            threshold,
+                            days,
+                            visible_only,
+                            &cancel,
+                        )?;
+                        if include_czml {
+                            res.czml =
+                                Some(czml::passes_document(&satellite, &res.passes, &cancel)?);
+                        }
+                        Ok::<_, AppError>(res)
+                    },
+                )
                 .await?;
 
             pass_res.map_err(|e| e.to_string())

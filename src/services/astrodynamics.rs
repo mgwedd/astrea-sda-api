@@ -15,6 +15,7 @@ use crate::services::ephemeris::{Ephemeris, Samples};
 use chrono::{DateTime, Utc};
 use rayon::prelude::*;
 use sgp4::{Constants, Elements, Prediction};
+use tokio_util::sync::CancellationToken;
 
 pub struct LookAngles {
     pub azimuth: f64,
@@ -531,6 +532,7 @@ pub fn generate_ground_track(
     step_seconds: usize,
     include_geojson: bool,
     include_czml: bool,
+    cancel: &CancellationToken,
 ) -> Result<GroundTrackResponse, AppError> {
     let eph = Ephemeris::from_satellite(satellite)?;
     let mean_motion_revs_day = eph.mean_motion_revs_day;
@@ -546,7 +548,7 @@ pub fn generate_ground_track(
     let Samples {
         points: trajectory,
         dropped: dropped_samples,
-    } = eph.range(start_time, duration_minutes * 60, step_seconds)?;
+    } = eph.range(start_time, duration_minutes * 60, step_seconds, cancel)?;
     let geojson_coords: Vec<[f64; 3]> = if include_geojson {
         trajectory
             .iter()
@@ -1326,6 +1328,7 @@ pub fn find_pass_schedule(
     elevation_threshold_deg: f64,
     duration_days: usize,
     visible_only: bool,
+    cancel: &CancellationToken,
 ) -> Result<PassScheduleResponse, AppError> {
     let days = duration_days.clamp(1, 14);
     let total_minutes = (days * 24 * 60) as i64;
@@ -1342,6 +1345,9 @@ pub fn find_pass_schedule(
     let mut k: i64 = 0;
 
     while k < total_minutes {
+        if cancel.is_cancelled() {
+            return Err(crate::services::ephemeris::cancelled());
+        }
         let t_curr = start_time + chrono::Duration::minutes(k);
         let e_curr = elev(t_curr);
 

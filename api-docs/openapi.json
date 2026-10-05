@@ -1356,6 +1356,16 @@
               }
             }
           },
+          "429": {
+            "description": "Per-user compute quota (3 concurrent jobs) exceeded; retry when one finishes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal calculation error",
             "content": {
@@ -1806,6 +1816,16 @@
           },
           "404": {
             "description": "Satellite not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Per-user compute quota (3 concurrent jobs) exceeded; retry when one finishes",
             "content": {
               "application/json": {
                 "schema": {
