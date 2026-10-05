@@ -514,6 +514,8 @@ curl -s -X POST http://localhost:8080/v1/auth/token \
   - `rangeRateKmS`: Positive when receding, negative when approaching.
   - `dopplerShiftHz`: Valid frequency offset calculated via \( \Delta f = -f_0 \cdot \frac{\dot{\rho}}{c} \).
   - `correctedFreqHz`: \( f_0 + \Delta f \).
+  - Repeat with `relativistic=true`: the result differs from the classical shift by under ~20 Hz at 10 GHz (second-order terms only).
+  - Cache: two requests with `time` 1 s apart return different `rangeRateKms`; identical requests return identical bodies.
 
 #### TC-ASTRO-06: Orbital Maneuver Reconstruction (`GET /v1/satellites/{id}/maneuvers`)
 - **RBAC**: Requires `viewer`, `editor`, or `admin`.
@@ -554,7 +556,7 @@ curl -s -X POST http://localhost:8080/v1/auth/token \
     -H "Authorization: Bearer $VIEWER_TOKEN"
   ```
 - **Expected Status**: `200 OK`
-- **Verification**: Returns `target: "Sun"`, `results` array with transit match geometries.
+- **Verification**: Returns `target: "Sun"`, `results` array with transit match geometries. For each match `transitStartUtc <= transitCenterUtc <= transitEndUtc` and `transitDurationSeconds` equals end minus start (computed, not a fixed 2 s window).
 
 #### TC-ASTRO-09: Lunar Satellite Transits (`GET /v1/transits/lunar`)
 - **RBAC**: Requires `viewer`, `editor`, or `admin`.
@@ -564,7 +566,7 @@ curl -s -X POST http://localhost:8080/v1/auth/token \
     -H "Authorization: Bearer $VIEWER_TOKEN"
   ```
 - **Expected Status**: `200 OK`
-- **Verification**: Returns `target: "Moon"`, with lunar topocentric coordinate match geometries.
+- **Verification**: Returns `target: "Moon"`, with lunar topocentric coordinate match geometries. The lunar series is low accuracy (up to ~2 degrees), so treat results as screening-level.
 
 #### TC-ASTRO-10: Conjunction Collision Radar (`GET /v1/conjunctions/search`)
 - **RBAC**: Requires `viewer`, `editor`, or `admin`.

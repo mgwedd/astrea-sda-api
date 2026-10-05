@@ -900,7 +900,7 @@
           "Satellites"
         ],
         "summary": "Get Satellite Atmospheric Drag & Decay Risk",
-        "description": "Evaluates perigee/apogee altitude, B* atmospheric drag decay rate, remaining orbital lifetime, and uncontrolled re-entry risk score. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).",
+        "description": "Evaluates perigee/apogee altitude above the WGS-84 ellipsoid, the re-entry regime and a risk score from perigee altitude alone. No lifetime is estimated because a TLE carries no ballistic coefficient. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).",
         "operationId": "getSatelliteDecayRisk",
         "parameters": [
           {
@@ -1876,7 +1876,7 @@
           "Astrodynamics"
         ],
         "summary": "Predict Lunar Satellite Transits",
-        "description": "Predicts satellite silhouettes crossing in front of the Lunar disk for a ground station observer. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).",
+        "description": "Predicts satellite silhouettes crossing in front of the Lunar disk for a ground station observer. Uses a low-accuracy lunar series (position error up to ~2 degrees), so results are screening-level. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).",
         "operationId": "getLunarTransits",
         "parameters": [
           {

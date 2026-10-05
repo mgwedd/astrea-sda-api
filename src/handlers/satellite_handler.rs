@@ -958,7 +958,7 @@ pub async fn get_solar_transits(
 
 /// Predict Lunar Satellite Transits
 ///
-/// Predicts satellite silhouettes crossing in front of the Lunar disk for a ground station observer. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).
+/// Predicts satellite silhouettes crossing in front of the Lunar disk for a ground station observer. Uses a low-accuracy lunar series (position error up to ~2 degrees), so results are screening-level. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).
 #[utoipa::path(
     get,
     path = "/v1/transits/lunar",
@@ -1187,7 +1187,7 @@ pub async fn get_satellite_state(
 
 /// Get Satellite Atmospheric Drag & Decay Risk
 ///
-/// Evaluates perigee/apogee altitude, B* atmospheric drag decay rate, remaining orbital lifetime, and uncontrolled re-entry risk score. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).
+/// Evaluates perigee/apogee altitude above the WGS-84 ellipsoid, the re-entry regime and a risk score from perigee altitude alone. No lifetime is estimated because a TLE carries no ballistic coefficient. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).
 #[utoipa::path(
     get,
     path = "/v1/satellites/{id}/decay-risk",

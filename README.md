@@ -71,7 +71,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 * 📡 **Pass & Visibility Predictions**: Topocentric look angles (Azimuth, Elevation, Range, Range Rate), Doppler shift, and multi-day ground station pass schedules (`/v1/satellites/{id}/passes`).
 * 🎯 **RPO & Relative Motion (Hill / LVLH Frame)**: Local-Vertical Local-Horizontal frame tracking (radial, in-track, cross-track) and proximity operations regime classification (`/v1/satellites/{id}/relative-motion`).
 * 🧭 **State Vectors & Keplerian Elements**: Instantaneous ECI (TEME), ECEF, Geodetic positions and osculating Keplerian orbital elements (`/v1/satellites/{id}/state`).
-* ☄️ **Atmospheric Drag & Orbital Decay Watch**: Real-time ballistic drag $B^*$ decay rate assessment, orbital lifetime estimation, and catalog-wide scanning for uncontrolled re-entry hazards (`/v1/satellites/decay-watch`).
+* ☄️ **Atmospheric Drag & Orbital Decay Watch**: Perigee-based re-entry regime and risk scoring, and catalog-wide scanning for uncontrolled re-entry hazards (`/v1/satellites/decay-watch`).
 * 💥 **Foster 2D Conjunction Collision Probability ($P_c$)**: Encounter-plane collision probability calculation using hard-body radius (HBR) and position covariance ellipsoids (`/v1/conjunctions/collision-probability`).
 * 🌍 **3D Ground Tracks & CZML**: Generate 3D satellite trajectories, GeoJSON feature collections, and Cesium-compatible CZML streams.
 * 🛰️ **Maneuver & Anomaly Detection**: Detect orbital maneuvers and station-keeping delta-V burns via mean-motion and semimajor-axis residual drift across TLE epochs.
