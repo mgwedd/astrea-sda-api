@@ -65,14 +65,9 @@ impl Ephemeris {
         })
     }
 
-    /// Samples `start ..= start + span_secs` every `step_secs`. Rejects
-    /// requests over `MAX_SPAN_SECS` / `MAX_SAMPLES` rather than clamping.
-    pub fn range(
-        &self,
-        start: DateTime<Utc>,
-        span_secs: usize,
-        step_secs: usize,
-    ) -> Result<Samples, AppError> {
+    /// Validates a sampling request and returns the sample count. Callers that
+    /// run inside the compute engine call this first so rejections are 400s.
+    pub fn check_range(span_secs: usize, step_secs: usize) -> Result<usize, AppError> {
         if step_secs == 0 || span_secs == 0 {
             return Err(AppError::BadRequest(
                 "duration and step must be positive".into(),
@@ -90,6 +85,18 @@ impl Ephemeris {
                 "{n} samples exceeds the {MAX_SAMPLES} limit; increase step_seconds"
             )));
         }
+        Ok(n)
+    }
+
+    /// Samples `start ..= start + span_secs` every `step_secs`. Rejects
+    /// requests over `MAX_SPAN_SECS` / `MAX_SAMPLES` rather than clamping.
+    pub fn range(
+        &self,
+        start: DateTime<Utc>,
+        span_secs: usize,
+        step_secs: usize,
+    ) -> Result<Samples, AppError> {
+        let n = Self::check_range(span_secs, step_secs)?;
         let points: Vec<_> = (0..n)
             .filter_map(|i| self.at(start + Duration::seconds((i * step_secs) as i64)))
             .collect();

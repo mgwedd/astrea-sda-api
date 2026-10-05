@@ -540,11 +540,8 @@ pub fn generate_ground_track(
         90.0
     };
 
-    if include_czml && step_seconds > czml::MAX_STEP_SECS {
-        return Err(AppError::BadRequest(format!(
-            "step_seconds must be <= {} for CZML output",
-            czml::MAX_STEP_SECS
-        )));
+    if include_czml {
+        czml::check_step(step_seconds)?;
     }
     let Samples {
         points: trajectory,

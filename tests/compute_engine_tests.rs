@@ -84,3 +84,41 @@ async fn test_admin_role_bypasses_user_quota() {
     assert!(res.is_ok());
     assert_eq!(res.unwrap(), "admin_success");
 }
+
+#[tokio::test]
+async fn run_executes_on_rayon_express_pool_and_returns_inner_error_untouched() {
+    let engine = AstreaComputeEngine::new(&ServerConfig::from_env());
+    let name = engine
+        .run(1, "u".into(), "viewer".into(), |_| -> Result<String, ()> {
+            Ok(std::thread::current().name().unwrap_or("").to_string())
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(name.starts_with("rayon-express-"), "{name}");
+
+    let heavy = engine
+        .run(
+            10_000,
+            "u".into(),
+            "viewer".into(),
+            |_| -> Result<String, ()> {
+                Ok(std::thread::current().name().unwrap_or("").to_string())
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(heavy.starts_with("rayon-heavy-"), "{heavy}");
+
+    let inner = engine
+        .run(
+            1,
+            "u".into(),
+            "viewer".into(),
+            |_| -> Result<(), &'static str> { Err("bad") },
+        )
+        .await
+        .unwrap();
+    assert_eq!(inner, Err("bad"));
+}

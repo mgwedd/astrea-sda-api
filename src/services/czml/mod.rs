@@ -13,6 +13,16 @@ use uuid::Uuid;
 /// LEO and Molniya (measured, docs/CZML_VIEWER_LOG.md R1).
 pub const MAX_STEP_SECS: usize = 120;
 
+/// Rejects sample spacing too coarse for the interpolation we declare.
+pub fn check_step(step_seconds: usize) -> Result<(), AppError> {
+    if step_seconds > MAX_STEP_SECS {
+        return Err(AppError::BadRequest(format!(
+            "step_seconds must be <= {MAX_STEP_SECS} for CZML output"
+        )));
+    }
+    Ok(())
+}
+
 const TRACK_RGBA: [u8; 4] = [0, 255, 255, 255];
 
 struct Track<'a> {

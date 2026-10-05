@@ -111,6 +111,65 @@ impl AstreaComputeEngine {
         Ok(estimated_ms)
     }
 
+    /// Per-user quota, swimlane choice, Rayon handoff and timeout, with no caching.
+    /// Outer `Err` is an engine failure (quota, capacity, timeout, panic); the
+    /// closure's own result comes back untouched in the inner `Result`.
+    pub async fn run<T, E, F>(
+        &self,
+        estimated_ms: u64,
+        user_id: String,
+        user_role: String,
+        compute_closure: F,
+    ) -> Result<Result<T, E>, String>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+        F: FnOnce(CancellationToken) -> Result<T, E> + Send + 'static,
+    {
+        // User identity quota (role == "admin" bypasses the user semaphore)
+        let _user_permit = if user_role != "admin" {
+            let sem = self
+                .user_limits
+                .entry(user_id)
+                .or_insert_with(|| Arc::new(Semaphore::new(3)))
+                .clone();
+            Some(
+                sem.acquire_owned()
+                    .await
+                    .map_err(|_| "User quota exceeded".to_string())?,
+            )
+        } else {
+            None
+        };
+
+        // Swimlane routing (Rayon pool selection based on estimated_ms)
+        let (pool, global_sem) = if estimated_ms <= 500 {
+            (&self.express_pool, &self.express_limit)
+        } else {
+            (&self.heavy_pool, &self.heavy_limit)
+        };
+
+        let _global_permit = global_sem
+            .acquire()
+            .await
+            .map_err(|_| "Compute capacity full".to_string())?;
+
+        let (tx, rx) = oneshot::channel();
+        let cancel_token = CancellationToken::new();
+        let token_clone = cancel_token.clone();
+
+        pool.spawn(move || {
+            let _ = tx.send(compute_closure(token_clone));
+        });
+
+        // Timeboxing & ghost task prevention
+        let _drop_guard = cancel_token.drop_guard();
+        tokio::time::timeout(Duration::from_secs(30), rx)
+            .await
+            .map_err(|_| "Execution timed out".to_string())?
+            .map_err(|_| "Worker panicked".to_string())
+    }
+
     /// Executes compute within the L1/L2 Coalescing Swimlane Pipeline
     pub async fn execute_compute<F>(
         &self,
@@ -126,13 +185,9 @@ impl AstreaComputeEngine {
         let cache_key = format!("astrea:compute:{}", request_hash);
 
         let redis_pool = self.redis_pool.clone();
+        let this = self.clone();
         let user_role_clone = user_role.clone();
         let user_id_clone = user_id.clone();
-        let user_limits = self.user_limits.clone();
-        let express_pool = self.express_pool.clone();
-        let heavy_pool = self.heavy_pool.clone();
-        let express_limit = self.express_limit.clone();
-        let heavy_limit = self.heavy_limit.clone();
 
         let result = self
             .flight_tracker
@@ -151,48 +206,15 @@ impl AstreaComputeEngine {
                     }
                 }
 
-                // 2. User Identity Quota (Role == "admin" bypasses user semaphore)
-                let _user_permit = if user_role_clone != "admin" {
-                    let sem = user_limits
-                        .entry(user_id_clone)
-                        .or_insert_with(|| Arc::new(Semaphore::new(3)))
-                        .clone();
-                    Some(
-                        sem.acquire_owned()
-                            .await
-                            .map_err(|_| "User quota exceeded".to_string())?,
+                let data = this
+                    .run(
+                        estimated_ms,
+                        user_id_clone,
+                        user_role_clone,
+                        compute_closure,
                     )
-                } else {
-                    None
-                };
-
-                // 3. Swimlane Routing (Rayon Pool selection based on estimated_ms)
-                let (pool, global_sem) = if estimated_ms <= 500 {
-                    (&express_pool, &express_limit)
-                } else {
-                    (&heavy_pool, &heavy_limit)
-                };
-
-                let _global_permit = global_sem
-                    .acquire()
-                    .await
-                    .map_err(|_| "Compute capacity full".to_string())?;
-
-                let (tx, rx) = oneshot::channel();
-                let cancel_token = CancellationToken::new();
-                let token_clone = cancel_token.clone();
-
-                // 4. Rayon Handoff
-                pool.spawn(move || {
-                    let _ = tx.send(compute_closure(token_clone));
-                });
-
-                // 5. Timeboxing & Ghost Task Prevention
-                let _drop_guard = cancel_token.clone().drop_guard();
-                let data = tokio::time::timeout(Duration::from_secs(30), rx)
-                    .await
-                    .map_err(|_| "Execution timed out".to_string())?
-                    .map_err(|_| "Worker panicked".to_string())??;
+                    .await?
+                    .map_err(|e: String| e)?;
 
                 // 6. Populate L2 Cache via persistent Connection Pool
                 if let Some(ref pool) = redis_pool {

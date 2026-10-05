@@ -98,3 +98,105 @@ fn lagrange5_stays_under_one_metre_up_to_120s_for_leo() {
         assert!(e < 1.0, "step {step}s: {e} m");
     }
 }
+
+mod http {
+    use astrea_sda_api::{create_router, repository::SatelliteRepository};
+    use axum::{body::Body, http::Request};
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    async fn call(app: &axum::Router, req: Request<Body>) -> (u16, Value) {
+        let res = app.clone().oneshot(req).await.unwrap();
+        let status = res.status().as_u16();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    async fn setup() -> (axum::Router, String, String) {
+        let app = create_router(SatelliteRepository::new(None).await);
+        let login = Request::builder()
+            .method("POST")
+            .uri("/v1/auth/login")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({"email": "admin@astrea.local", "password": "password123"}).to_string(),
+            ))
+            .unwrap();
+        let token = call(&app, login).await.1["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let create = Request::builder()
+            .method("POST")
+            .uri("/v1/satellites")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                json!({
+                    "name": "ISS",
+                    "tleLineOne": "1 25544U 98067A   24083.89679124  .00014815  00000+0  26815-3 0  9996",
+                    "tleLineTwo": "2 25544  51.6416 195.9189 0004543  98.7845 261.3938 15.49814442445012"
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let id = call(&app, create).await.1["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        (app, token, id)
+    }
+
+    async fn get(app: &axum::Router, token: &str, uri: String) -> (u16, Value) {
+        let req = Request::builder()
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        call(app, req).await
+    }
+
+    #[tokio::test]
+    async fn over_cap_requests_are_400_not_500() {
+        let (app, t, id) = setup().await;
+        let base = format!("/v1/satellites/{id}/groundtrack?start_time=2024-03-25T12:00:00Z");
+        for q in [
+            "duration_minutes=1500&step_seconds=60",            // > 24 h
+            "duration_minutes=60&step_seconds=1",               // 3601 samples
+            "duration_minutes=30&step_seconds=300&format=czml", // step > 120 s for czml
+        ] {
+            let (status, body) = get(&app, &t, format!("{base}&{q}")).await;
+            assert_eq!(status, 400, "{q}: {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn groundtrack_and_passes_czml_through_engine() {
+        let (app, t, id) = setup().await;
+        let (status, body) = get(
+            &app,
+            &t,
+            format!("/v1/satellites/{id}/groundtrack?duration_minutes=30&step_seconds=60&format=czml&start_time=2024-03-25T12:00:00Z"),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["droppedSamples"], 0);
+        assert_eq!(body["czml"][1]["position"]["referenceFrame"], "FIXED");
+
+        let (status, body) = get(
+            &app,
+            &t,
+            format!("/v1/satellites/{id}/passes?lat=40&lon=-75&duration_days=1&format=czml&start_time=2024-03-25T00:00:00Z"),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let n = body["passes"].as_array().unwrap().len();
+        assert!(n > 0);
+        assert_eq!(body["czml"].as_array().unwrap().len(), n + 1);
+    }
+}
