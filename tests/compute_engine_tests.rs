@@ -149,15 +149,15 @@ async fn wait_for(cond: impl Fn() -> bool) {
 
 #[tokio::test]
 async fn user_quota_rejects_instead_of_queueing_and_evicts_idle_users() {
-    // More express slots than the 3 held jobs, so the other callers reach the quota check.
+    // More express slots than the 5 held jobs, so the other callers reach the quota check.
     let engine = AstreaComputeEngine::new(&ServerConfig {
-        express_cores: 8,
+        express_cores: 10,
         ..ServerConfig::from_env()
     });
     let (started, stopped) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
 
     // Hold the user's 3 slots with jobs that run until cancelled.
-    let held: Vec<_> = (0..3)
+    let held: Vec<_> = (0..5)
         .map(|_| {
             let (e, s, d) = (engine.clone(), started.clone(), stopped.clone());
             tokio::spawn(async move {
@@ -166,7 +166,7 @@ async fn user_quota_rejects_instead_of_queueing_and_evicts_idle_users() {
             })
         })
         .collect();
-    wait_for(|| started.load(Ordering::SeqCst) == 3).await;
+    wait_for(|| started.load(Ordering::SeqCst) == 5).await;
 
     let over = engine
         .run(1, "u".into(), "viewer".into(), |_| Ok::<_, ()>(()))
@@ -187,7 +187,7 @@ async fn user_quota_rejects_instead_of_queueing_and_evicts_idle_users() {
     for h in &held {
         h.abort();
     }
-    wait_for(|| stopped.load(Ordering::SeqCst) == 3).await;
+    wait_for(|| stopped.load(Ordering::SeqCst) == 5).await;
     wait_for(|| engine.user_limits.is_empty()).await;
 }
 
@@ -210,11 +210,11 @@ async fn dropping_the_caller_cancels_a_running_job() {
 async fn admin_quota_is_ten_times_the_user_quota() {
     // Enough express slots that only the per-user quota can reject.
     let engine = AstreaComputeEngine::new(&ServerConfig {
-        express_cores: 40,
+        express_cores: 60,
         ..ServerConfig::from_env()
     });
     let (started, stopped) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
-    let held: Vec<_> = (0..30)
+    let held: Vec<_> = (0..50)
         .map(|_| {
             let (e, s, d) = (engine.clone(), started.clone(), stopped.clone());
             tokio::spawn(async move {
@@ -223,7 +223,7 @@ async fn admin_quota_is_ten_times_the_user_quota() {
             })
         })
         .collect();
-    wait_for(|| started.load(Ordering::SeqCst) == 30).await;
+    wait_for(|| started.load(Ordering::SeqCst) == 50).await;
 
     let over = engine
         .run(1, "a".into(), "admin".into(), |_| Ok::<_, ()>(()))
@@ -233,6 +233,6 @@ async fn admin_quota_is_ten_times_the_user_quota() {
     for h in &held {
         h.abort();
     }
-    wait_for(|| stopped.load(Ordering::SeqCst) == 30).await;
+    wait_for(|| stopped.load(Ordering::SeqCst) == 50).await;
     wait_for(|| engine.user_limits.is_empty()).await;
 }

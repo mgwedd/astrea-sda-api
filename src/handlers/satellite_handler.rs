@@ -559,7 +559,7 @@ pub async fn get_next_visible(
         (status = 200, description = "3D Ground Track and GeoJSON trajectory", body = GroundTrackResponse),
         (status = 401, description = "Unauthorized - Missing or invalid JWT token", body = ErrorResponse),
         (status = 404, description = "Satellite not found", body = ErrorResponse),
-        (status = 429, description = "Per-user compute quota (3 concurrent jobs, 30 for admins) exceeded; retry when one finishes", body = ErrorResponse),
+        (status = 429, description = "Per-user compute quota (5 concurrent jobs, 50 for admins) exceeded; retry when one finishes", body = ErrorResponse),
         (status = 500, description = "Internal calculation error", body = ErrorResponse)
     ),
     security(("bearer_auth" = [])),
@@ -1043,7 +1043,7 @@ pub async fn get_lunar_transits(
         (status = 200, description = "Satellite pass schedule computed successfully", body = PassScheduleResponse),
         (status = 401, description = "Unauthorized - Missing or invalid JWT token", body = ErrorResponse),
         (status = 404, description = "Satellite not found", body = ErrorResponse),
-        (status = 429, description = "Per-user compute quota (3 concurrent jobs, 30 for admins) exceeded; retry when one finishes", body = ErrorResponse)
+        (status = 429, description = "Per-user compute quota (5 concurrent jobs, 50 for admins) exceeded; retry when one finishes", body = ErrorResponse)
     ),
     security(("bearer_auth" = [])),
     tag = "Satellites"

@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 /// Concurrent in-flight jobs per user; further requests are rejected, not queued.
-const USER_QUOTA: usize = 3;
+const USER_QUOTA: usize = 5;
 /// Admins get 10x the user quota.
 const ADMIN_QUOTA: usize = USER_QUOTA * 10;
 /// Semaphores are keyed by (user, quota) so a role change cannot reuse a semaphore of the wrong size.
