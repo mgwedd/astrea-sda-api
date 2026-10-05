@@ -313,7 +313,7 @@
         ]
       }
     },
-    "/v1/decay-watch": {
+    "/v1/decay-risks": {
       "get": {
         "tags": [
           "Astrodynamics"
@@ -384,7 +384,7 @@
         ]
       }
     },
-    "/v1/overhead": {
+    "/v1/overhead-satellites": {
       "get": {
         "tags": [
           "Satellites"

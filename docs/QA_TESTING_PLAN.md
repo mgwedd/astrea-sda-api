@@ -260,7 +260,7 @@ curl -s -X POST http://localhost:8080/v1/auth/token \
 | `PATCH /v1/satellites/{id}` | Update Satellite | ❌ 401 | ❌ 403 Forbidden | ✅ Allowed (200) | ✅ Allowed (200) |
 | `DELETE /v1/satellites/{id}` | Delete Satellite | ❌ 401 | ❌ 403 Forbidden | ❌ 403 Forbidden | ✅ Allowed (204) |
 | `POST /v1/pipelines/sync` | CelesTrak Ingestion | ❌ 401 | ❌ 403 Forbidden | ❌ 403 Forbidden | ✅ Allowed (200) |
-| `GET /v1/overhead` | Overhead Calculation | ❌ 401 | ✅ Allowed (200) | ✅ Allowed (200) | ✅ Allowed (200) |
+| `GET /v1/overhead-satellites` | Overhead Calculation | ❌ 401 | ✅ Allowed (200) | ✅ Allowed (200) | ✅ Allowed (200) |
 | `GET /v1/satellites/{id}/next-visible` | Next Pass Visibility | ❌ 401 | ✅ Allowed (200) | ✅ Allowed (200) | ✅ Allowed (200) |
 | `GET /v1/satellites/{id}/groundtrack` | 3D Ground Track | ❌ 401 | ✅ Allowed (200) | ✅ Allowed (200) | ✅ Allowed (200) |
 | `GET /v1/satellites/{id}/illumination` | Sun Illumination | ❌ 401 | ✅ Allowed (200) | ✅ Allowed (200) | ✅ Allowed (200) |
@@ -433,8 +433,8 @@ curl -s -X POST http://localhost:8080/v1/auth/token \
 
 *(Note: Ensure at least one active satellite exists before running astrodynamics calculations. Re-create the ISS record using TC-SAT-01 if deleted).*
 
-#### TC-ASTRO-01: Observer Overhead Satellites (`GET /v1/overhead`)
-- **Route**: Canonical `/v1/overhead`.
+#### TC-ASTRO-01: Observer Overhead Satellites (`GET /v1/overhead-satellites`)
+- **Route**: Canonical `/v1/overhead-satellites`.
 - **RBAC**: Requires `viewer`, `editor`, or `admin`.
 - **Query Parameters**:
   - `lat`: `37.7749` (San Francisco, CA)
@@ -443,7 +443,7 @@ curl -s -X POST http://localhost:8080/v1/auth/token \
   - `time`: `2026-10-02T12:00:00Z` *(optional)*
 - **Command**:
   ```bash
-  curl -i -X GET "http://localhost:8080/v1/overhead?lat=37.7749&lon=-122.4194&alt=15.0" \
+  curl -i -X GET "http://localhost:8080/v1/overhead-satellites?lat=37.7749&lon=-122.4194&alt=15.0" \
     -H "Authorization: Bearer $VIEWER_TOKEN"
   ```
 - **Expected Status**: `200 OK`
@@ -747,9 +747,9 @@ SAT_ID=$(echo "$CREATE_RES" | jq -r .id)
 COUNT=$(curl -s -H "Authorization: Bearer $TOKEN" "$API_URL/v1/satellites?limit=1" | jq '.data | length')
 [ "$COUNT" -ge 1 ] && pass "List Satellites Paginated (Count: $COUNT)" || fail "List failed"
 
-# 6. Satellites: Overhead (Protected: Requires Bearer Auth; tests canonical /v1/overhead)
-OVERHEAD_ELEV=$(curl -s -H "Authorization: Bearer $TOKEN" "$API_URL/v1/overhead?lat=13.923&lon=177.315&time=2021-08-27T16:00:00Z" | jq .elevation)
-[ "$OVERHEAD_ELEV" != "null" ] && [ -n "$OVERHEAD_ELEV" ] && pass "Overhead Search (/v1/overhead - Elevation: ${OVERHEAD_ELEV}°)" || fail "Overhead query failed"
+# 6. Satellites: Overhead (Protected: Requires Bearer Auth; tests canonical /v1/overhead-satellites)
+OVERHEAD_ELEV=$(curl -s -H "Authorization: Bearer $TOKEN" "$API_URL/v1/overhead-satellites?lat=13.923&lon=177.315&time=2021-08-27T16:00:00Z" | jq .elevation)
+[ "$OVERHEAD_ELEV" != "null" ] && [ -n "$OVERHEAD_ELEV" ] && pass "Overhead Search (/v1/overhead-satellites - Elevation: ${OVERHEAD_ELEV}°)" || fail "Overhead query failed"
 
 # 7. Satellites: Groundtrack GeoJSON (Protected: Requires Bearer Auth)
 FORMAT=$(curl -s -H "Authorization: Bearer $TOKEN" "$API_URL/v1/satellites/$SAT_ID/groundtrack?start_time=2021-08-27T16:00:00Z&duration_minutes=30&step_seconds=60&format=geojson" | jq -r '.geojson.type // .type')

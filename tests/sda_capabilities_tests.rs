@@ -361,10 +361,10 @@ async fn test_sda_api_endpoints_integration() {
     assert_eq!(decay_res["satelliteName"], "ISS (ZARYA)");
     assert!(decay_res["perigeeAltitudeKm"].as_f64().unwrap() > 350.0);
 
-    // 7. Test GET /v1/decay-watch
+    // 7. Test GET /v1/decay-risks
     let req = Request::builder()
         .method("GET")
-        .uri("/v1/decay-watch?max_perigee_km=500.0&limit=10")
+        .uri("/v1/decay-risks?max_perigee_km=500.0&limit=10")
         .header("authorization", format!("Bearer {}", token))
         .body(Body::empty())
         .unwrap();

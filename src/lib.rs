@@ -174,8 +174,8 @@ pub fn create_router_with_auth_and_limiter(
                 .patch(handlers::update_satellite)
                 .delete(handlers::delete_satellite),
         )
-        .route("/overhead", get(handlers::get_overhead))
-        .route("/decay-watch", get(handlers::get_decay_watch))
+        .route("/overhead-satellites", get(handlers::get_overhead))
+        .route("/decay-risks", get(handlers::get_decay_watch))
         .route("/conjunctions/search", get(handlers::search_conjunctions))
         .route(
             "/conjunctions/collision-probability",

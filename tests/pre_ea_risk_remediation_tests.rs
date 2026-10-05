@@ -50,7 +50,7 @@ async fn test_ea_risk_defense_in_depth_unauthenticated_access_is_blocked() {
             Some(json!({"name": "UPDATE"}).to_string()),
         ),
         ("DELETE", &format!("/v1/satellites/{}", dummy_id), None),
-        ("GET", "/v1/overhead?lat=0&lon=0", None),
+        ("GET", "/v1/overhead-satellites?lat=0&lon=0", None),
         (
             "GET",
             &format!("/v1/satellites/{}/next-visible?lat=0&lon=0", dummy_id),

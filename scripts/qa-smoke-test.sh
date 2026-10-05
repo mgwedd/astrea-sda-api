@@ -50,9 +50,9 @@ SAT_ID=$(echo "$CREATE_RES" | jq -r .id)
 COUNT=$(curl -s -H "Authorization: Bearer $TOKEN" "$API_URL/v1/satellites?limit=1" | jq '.data | length')
 [ "$COUNT" -ge 1 ] && pass "List Satellites Paginated (Count: $COUNT)" || fail "List failed"
 
-# 6. Satellites: Overhead (Protected: Requires Bearer Auth; tests canonical /v1/overhead)
-OVERHEAD_ELEV=$(curl -s -H "Authorization: Bearer $TOKEN" "$API_URL/v1/overhead?lat=13.923&lon=177.315&time=2021-08-27T16:00:00Z" | jq .elevation)
-[ "$OVERHEAD_ELEV" != "null" ] && [ -n "$OVERHEAD_ELEV" ] && pass "Overhead Search (/v1/overhead - Elevation: ${OVERHEAD_ELEV}°)" || fail "Overhead query failed"
+# 6. Satellites: Overhead (Protected: Requires Bearer Auth; tests canonical /v1/overhead-satellites)
+OVERHEAD_ELEV=$(curl -s -H "Authorization: Bearer $TOKEN" "$API_URL/v1/overhead-satellites?lat=13.923&lon=177.315&time=2021-08-27T16:00:00Z" | jq .elevation)
+[ "$OVERHEAD_ELEV" != "null" ] && [ -n "$OVERHEAD_ELEV" ] && pass "Overhead Search (/v1/overhead-satellites - Elevation: ${OVERHEAD_ELEV}°)" || fail "Overhead query failed"
 
 # 7. Satellites: Groundtrack GeoJSON (Protected: Requires Bearer Auth)
 FORMAT=$(curl -s -H "Authorization: Bearer $TOKEN" "$API_URL/v1/satellites/$SAT_ID/groundtrack?start_time=2021-08-27T16:00:00Z&duration_minutes=30&step_seconds=60&format=geojson" | jq -r '.geojson.type // .type')

@@ -51,8 +51,9 @@ fn test_openapi_schema_static_contract() {
         "Missing or invalid operationId for DELETE /v1/satellites/{{id}}"
     );
     assert!(
-        paths["/v1/overhead"]["get"]["operationId"].as_str() == Some("getOverheadSatellite"),
-        "Missing or invalid operationId for GET /v1/overhead"
+        paths["/v1/overhead-satellites"]["get"]["operationId"].as_str()
+            == Some("getOverheadSatellite"),
+        "Missing or invalid operationId for GET /v1/overhead-satellites"
     );
     assert!(
         paths["/v1/satellites/{id}/next-visible"]["get"]["operationId"].as_str()
@@ -127,8 +128,8 @@ fn test_openapi_schema_static_contract() {
         "Missing or invalid operationId for GET /v1/satellites/{{id}}/decay-risk"
     );
     assert!(
-        paths["/v1/decay-watch"]["get"]["operationId"].as_str() == Some("getDecayWatch"),
-        "Missing or invalid operationId for GET /v1/decay-watch"
+        paths["/v1/decay-risks"]["get"]["operationId"].as_str() == Some("getDecayWatch"),
+        "Missing or invalid operationId for GET /v1/decay-risks"
     );
 
     // Verify REST Architecture Tag Separation:
@@ -137,7 +138,10 @@ fn test_openapi_schema_static_contract() {
         (&paths["/v1/satellites"]["get"], "listSatellites"),
         (&paths["/v1/satellites"]["post"], "createSatellite"),
         (&paths["/v1/satellites/{id}"]["get"], "getSatellite"),
-        (&paths["/v1/overhead"]["get"], "getOverheadSatellite"),
+        (
+            &paths["/v1/overhead-satellites"]["get"],
+            "getOverheadSatellite",
+        ),
         (
             &paths["/v1/satellites/{id}/next-visible"]["get"],
             "getNextVisiblePass",

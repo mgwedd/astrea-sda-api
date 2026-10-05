@@ -336,10 +336,10 @@ def run_suite(api_url, profile_name, has_redis=False):
 
     # 6. Astrodynamics & Calculations
     print(f"\n{YELLOW}--- 6. Astrodynamics & Orbital Calculations ---{RESET}")
-    # Canonical /v1/overhead
-    st, _, b = http_req("GET", f"{api_url}/v1/overhead?lat=13.923&lon=177.315&time=2021-08-27T16:00:00Z", headers={"Authorization": f"Bearer {dev_viewer_token}"})
+    # Canonical /v1/overhead-satellites
+    st, _, b = http_req("GET", f"{api_url}/v1/overhead-satellites?lat=13.923&lon=177.315&time=2021-08-27T16:00:00Z", headers={"Authorization": f"Bearer {dev_viewer_token}"})
     if st == 200 and isinstance(b, dict) and "satellite" in b:
-        log_pass(f"Canonical Overhead Query (GET /v1/overhead - Sat: {b['satellite']['name']}, Elev: {b.get('elevation')}°)")
+        log_pass(f"Canonical Overhead Query (GET /v1/overhead-satellites - Sat: {b['satellite']['name']}, Elev: {b.get('elevation')}°)")
     else:
         log_fail("Canonical Overhead calculation", f"Status: {st}, Body: {b}")
 
