@@ -1357,7 +1357,7 @@
             }
           },
           "429": {
-            "description": "Per-user concurrent compute quota exceeded (USER_COMPUTE_QUOTA, default 5; admins 10x); retry when a job finishes",
+            "description": "Per-user concurrent compute quota exceeded (COMPUTE_JOB_QUOTA_BY_ROLE, default 5; admin 50); retry when a job finishes",
             "content": {
               "application/json": {
                 "schema": {
@@ -1825,7 +1825,7 @@
             }
           },
           "429": {
-            "description": "Per-user concurrent compute quota exceeded (USER_COMPUTE_QUOTA, default 5; admins 10x); retry when a job finishes",
+            "description": "Per-user concurrent compute quota exceeded (COMPUTE_JOB_QUOTA_BY_ROLE, default 5; admin 50); retry when a job finishes",
             "content": {
               "application/json": {
                 "schema": {
