@@ -3,7 +3,8 @@ use crate::error::AppError;
 use crate::models::{
     AnomalyDetectionRequest, AnomalyDetectionResponse, CollisionProbabilityRequest,
     CollisionProbabilityResponse, ConjunctionSearchResponse, CreateSatelliteDto,
-    DecayWatchResponse, DopplerResponse, GroundTrackResponse, IlluminationResponse,
+    DecayWatchResponse, DopplerResponse, ElementTransformRequest, ElementTransformResponse,
+    FrameTransformRequest, FrameTransformResponse, GroundTrackResponse, IlluminationResponse,
     ManeuverQueryParams, ManeuversResponse, NextVisiblePassResponse, OverheadResponse,
     PassScheduleResponse, RelativeMotionResponse, Satellite, SatelliteDecayRiskResponse,
     SatelliteStateResponse, TransitPredictionResponse, TransitQueryParams, TransitTarget,
@@ -1332,5 +1333,55 @@ pub async fn calculate_collision_probability(
         req.miss_angle_deg.unwrap_or(0.0),
     );
 
+    Ok(Json(res))
+}
+
+/// Transform Orbital Elements (Cartesian, Keplerian, Modified Equinoctial)
+///
+/// Converts between Cartesian state vectors, Classical Keplerian elements, and singularity-free Modified Equinoctial elements (p, f, g, h, k, L). Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).
+#[utoipa::path(
+    post,
+    path = "/v1/astrodynamics/transforms/elements",
+    operation_id = "transformOrbitalElements",
+    request_body = ElementTransformRequest,
+    responses(
+        (status = 200, description = "Orbital elements transformed successfully across all representations", body = ElementTransformResponse),
+        (status = 400, description = "Invalid request payload or singular/hyperbolic orbit", body = ErrorResponse),
+        (status = 401, description = "Unauthorized - Missing or invalid JWT token", body = ErrorResponse)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "Astrodynamics"
+)]
+pub async fn transform_elements(
+    claims: Claims,
+    Json(req): Json<ElementTransformRequest>,
+) -> Result<Json<ElementTransformResponse>, AppError> {
+    claims.require_role(UserRole::Viewer)?;
+    let res = astrodynamics::transform_orbital_elements(&req)?;
+    Ok(Json(res))
+}
+
+/// Transform Coordinate Frames (ECI, ECEF, Topocentric SEZ / NED)
+///
+/// Converts position and velocity state vectors across ECI (TEME), ECEF (WGS-84), and Topocentric Horizon frames (SEZ, NED) with Greenwich Mean Sidereal Time rotation, kinematic velocity transport, Bowring geodetics, and look angle slant range/range rates. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).
+#[utoipa::path(
+    post,
+    path = "/v1/astrodynamics/transforms/frames",
+    operation_id = "transformCoordinateFrames",
+    request_body = FrameTransformRequest,
+    responses(
+        (status = 200, description = "State vectors transformed successfully across coordinate frames", body = FrameTransformResponse),
+        (status = 400, description = "Invalid request payload or missing topocentric observer coordinates", body = ErrorResponse),
+        (status = 401, description = "Unauthorized - Missing or invalid JWT token", body = ErrorResponse)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "Astrodynamics"
+)]
+pub async fn transform_frames(
+    claims: Claims,
+    Json(req): Json<FrameTransformRequest>,
+) -> Result<Json<FrameTransformResponse>, AppError> {
+    claims.require_role(UserRole::Viewer)?;
+    let res = astrodynamics::transform_coordinate_frame(&req)?;
     Ok(Json(res))
 }

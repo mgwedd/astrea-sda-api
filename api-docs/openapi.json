@@ -12,6 +12,120 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/v1/astrodynamics/transforms/elements": {
+      "post": {
+        "tags": [
+          "Astrodynamics"
+        ],
+        "summary": "Transform Orbital Elements (Cartesian, Keplerian, Modified Equinoctial)",
+        "description": "Converts between Cartesian state vectors, Classical Keplerian elements, and singularity-free Modified Equinoctial elements (p, f, g, h, k, L). Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).",
+        "operationId": "transformOrbitalElements",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ElementTransformRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Orbital elements transformed successfully across all representations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ElementTransformResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request payload or singular/hyperbolic orbit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Missing or invalid JWT token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/v1/astrodynamics/transforms/frames": {
+      "post": {
+        "tags": [
+          "Astrodynamics"
+        ],
+        "summary": "Transform Coordinate Frames (ECI, ECEF, Topocentric SEZ / NED)",
+        "description": "Converts position and velocity state vectors across ECI (TEME), ECEF (WGS-84), and Topocentric Horizon frames (SEZ, NED) with Greenwich Mean Sidereal Time rotation, kinematic velocity transport, Bowring geodetics, and look angle slant range/range rates. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).",
+        "operationId": "transformCoordinateFrames",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FrameTransformRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "State vectors transformed successfully across coordinate frames",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrameTransformResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request payload or missing topocentric observer coordinates",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Missing or invalid JWT token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/v1/auth/login": {
       "post": {
         "tags": [
@@ -2166,6 +2280,29 @@
           }
         }
       },
+      "CartesianState": {
+        "type": "object",
+        "required": [
+          "positionKm",
+          "velocityKms"
+        ],
+        "properties": {
+          "positionKm": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "velocityKms": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            }
+          }
+        }
+      },
       "Claims": {
         "type": "object",
         "description": "JWT Claims payload structure containing standard OIDC and OAuth 2.0 claim fields.",
@@ -2223,6 +2360,63 @@
           "sub": {
             "type": "string",
             "description": "Subject (User ID, username, or client service ID)"
+          }
+        }
+      },
+      "ClassicalKeplerianElements": {
+        "type": "object",
+        "required": [
+          "semiMajorAxisKm",
+          "eccentricity",
+          "inclinationDeg",
+          "raanDeg",
+          "argOfPerigeeDeg",
+          "trueAnomalyDeg",
+          "meanAnomalyDeg",
+          "orbitalPeriodMinutes",
+          "perigeeAltitudeKm",
+          "apogeeAltitudeKm"
+        ],
+        "properties": {
+          "apogeeAltitudeKm": {
+            "type": "number",
+            "format": "double"
+          },
+          "argOfPerigeeDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "eccentricity": {
+            "type": "number",
+            "format": "double"
+          },
+          "inclinationDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "meanAnomalyDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "orbitalPeriodMinutes": {
+            "type": "number",
+            "format": "double"
+          },
+          "perigeeAltitudeKm": {
+            "type": "number",
+            "format": "double"
+          },
+          "raanDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "semiMajorAxisKm": {
+            "type": "number",
+            "format": "double"
+          },
+          "trueAnomalyDeg": {
+            "type": "number",
+            "format": "double"
           }
         }
       },
@@ -2425,6 +2619,15 @@
           }
         }
       },
+      "CoordinateFrame": {
+        "type": "string",
+        "enum": [
+          "ECI_TEME",
+          "ECEF_WGS84",
+          "TOPOCENTRIC_SEZ",
+          "TOPOCENTRIC_NED"
+        ]
+      },
       "CreateSatelliteDto": {
         "type": "object",
         "required": [
@@ -2547,6 +2750,101 @@
           }
         }
       },
+      "ElementTransformRequest": {
+        "type": "object",
+        "properties": {
+          "cartesian": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/CartesianState"
+              }
+            ],
+            "nullable": true
+          },
+          "equinoctial": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/EquinoctialInput"
+              }
+            ],
+            "nullable": true
+          },
+          "keplerian": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/KeplerianInput"
+              }
+            ],
+            "nullable": true
+          }
+        }
+      },
+      "ElementTransformResponse": {
+        "type": "object",
+        "required": [
+          "cartesian",
+          "keplerian",
+          "equinoctial"
+        ],
+        "properties": {
+          "cartesian": {
+            "$ref": "#/components/schemas/CartesianState"
+          },
+          "equinoctial": {
+            "$ref": "#/components/schemas/ModifiedEquinoctialElements"
+          },
+          "keplerian": {
+            "$ref": "#/components/schemas/ClassicalKeplerianElements"
+          }
+        }
+      },
+      "EquinoctialInput": {
+        "type": "object",
+        "required": [
+          "pKm",
+          "f",
+          "g",
+          "h",
+          "k"
+        ],
+        "properties": {
+          "f": {
+            "type": "number",
+            "format": "double"
+          },
+          "g": {
+            "type": "number",
+            "format": "double"
+          },
+          "h": {
+            "type": "number",
+            "format": "double"
+          },
+          "k": {
+            "type": "number",
+            "format": "double"
+          },
+          "meanLongitudeDeg": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "pKm": {
+            "type": "number",
+            "format": "double"
+          },
+          "retrogradeFactor": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "trueLongitudeDeg": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          }
+        }
+      },
       "ErrorResponse": {
         "type": "object",
         "required": [
@@ -2561,6 +2859,109 @@
             "type": "integer",
             "format": "int32",
             "minimum": 0
+          }
+        }
+      },
+      "FrameTransformRequest": {
+        "type": "object",
+        "required": [
+          "sourceFrame",
+          "targetFrame",
+          "epoch",
+          "position"
+        ],
+        "properties": {
+          "epoch": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "observerAltM": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "observerLatDeg": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "observerLonDeg": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "position": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "sourceFrame": {
+            "$ref": "#/components/schemas/CoordinateFrame"
+          },
+          "targetFrame": {
+            "$ref": "#/components/schemas/CoordinateFrame"
+          },
+          "velocity": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "nullable": true
+          }
+        }
+      },
+      "FrameTransformResponse": {
+        "type": "object",
+        "required": [
+          "sourceFrame",
+          "targetFrame",
+          "epoch",
+          "position"
+        ],
+        "properties": {
+          "epoch": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "geodetic": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/GeodeticCoordinates"
+              }
+            ],
+            "nullable": true
+          },
+          "lookAngles": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/LookAnglesDetail"
+              }
+            ],
+            "nullable": true
+          },
+          "position": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "sourceFrame": {
+            "$ref": "#/components/schemas/CoordinateFrame"
+          },
+          "targetFrame": {
+            "$ref": "#/components/schemas/CoordinateFrame"
+          },
+          "velocity": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "nullable": true
           }
         }
       },
@@ -2591,6 +2992,28 @@
           "coordinates": {},
           "type": {
             "type": "string"
+          }
+        }
+      },
+      "GeodeticCoordinates": {
+        "type": "object",
+        "required": [
+          "latitudeDeg",
+          "longitudeDeg",
+          "altitudeKm"
+        ],
+        "properties": {
+          "altitudeKm": {
+            "type": "number",
+            "format": "double"
+          },
+          "latitudeDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "longitudeDeg": {
+            "type": "number",
+            "format": "double"
           }
         }
       },
@@ -2789,6 +3212,48 @@
           }
         }
       },
+      "KeplerianInput": {
+        "type": "object",
+        "required": [
+          "semiMajorAxisKm",
+          "eccentricity",
+          "inclinationDeg",
+          "raanDeg",
+          "argOfPerigeeDeg"
+        ],
+        "properties": {
+          "argOfPerigeeDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "eccentricity": {
+            "type": "number",
+            "format": "double"
+          },
+          "inclinationDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "meanAnomalyDeg": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "raanDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "semiMajorAxisKm": {
+            "type": "number",
+            "format": "double"
+          },
+          "trueAnomalyDeg": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          }
+        }
+      },
       "LightingState": {
         "type": "string",
         "enum": [
@@ -2812,6 +3277,33 @@
           "password": {
             "type": "string",
             "description": "Account password"
+          }
+        }
+      },
+      "LookAnglesDetail": {
+        "type": "object",
+        "required": [
+          "azimuthDeg",
+          "elevationDeg",
+          "slantRangeKm"
+        ],
+        "properties": {
+          "azimuthDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "elevationDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "rangeRateKms": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "slantRangeKm": {
+            "type": "number",
+            "format": "double"
           }
         }
       },
@@ -2855,6 +3347,53 @@
           "totalManeuversDetected": {
             "type": "integer",
             "minimum": 0
+          }
+        }
+      },
+      "ModifiedEquinoctialElements": {
+        "type": "object",
+        "required": [
+          "pKm",
+          "f",
+          "g",
+          "h",
+          "k",
+          "trueLongitudeDeg",
+          "meanLongitudeDeg",
+          "retrogradeFactor"
+        ],
+        "properties": {
+          "f": {
+            "type": "number",
+            "format": "double"
+          },
+          "g": {
+            "type": "number",
+            "format": "double"
+          },
+          "h": {
+            "type": "number",
+            "format": "double"
+          },
+          "k": {
+            "type": "number",
+            "format": "double"
+          },
+          "meanLongitudeDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "pKm": {
+            "type": "number",
+            "format": "double"
+          },
+          "retrogradeFactor": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "trueLongitudeDeg": {
+            "type": "number",
+            "format": "double"
           }
         }
       },

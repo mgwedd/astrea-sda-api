@@ -1,12 +1,14 @@
 use crate::error::AppError;
 use crate::models::{
-    CollisionProbabilityResponse, ConjunctionMatch, ConjunctionSearchResponse, DecayWatchResponse,
-    DopplerResponse, GeoJsonFeature, GeoJsonGeometry, GroundTrackPoint, GroundTrackResponse,
-    IlluminationResponse, KeplerianElements, LightingState, NextVisiblePassResponse,
-    ObserverTwilightState, OverheadResponse, PassScheduleResponse, RelativeMotionPoint,
-    RelativeMotionResponse, Satellite, SatelliteDecayRiskResponse, SatellitePass,
-    SatelliteStateResponse, SatelliteSummary, TransitMatch, TransitPredictionResponse,
-    TransitTarget,
+    CartesianState, ClassicalKeplerianElements, CollisionProbabilityResponse, ConjunctionMatch,
+    ConjunctionSearchResponse, CoordinateFrame, DecayWatchResponse, DopplerResponse,
+    ElementTransformRequest, ElementTransformResponse, FrameTransformRequest,
+    FrameTransformResponse, GeoJsonFeature, GeoJsonGeometry, GeodeticCoordinates, GroundTrackPoint,
+    GroundTrackResponse, IlluminationResponse, KeplerianElements, LightingState, LookAnglesDetail,
+    ModifiedEquinoctialElements, NextVisiblePassResponse, ObserverTwilightState, OverheadResponse,
+    PassScheduleResponse, RelativeMotionPoint, RelativeMotionResponse, Satellite,
+    SatelliteDecayRiskResponse, SatellitePass, SatelliteStateResponse, SatelliteSummary,
+    TransitMatch, TransitPredictionResponse, TransitTarget,
 };
 use chrono::{DateTime, Utc};
 use rayon::prelude::*;
@@ -56,8 +58,12 @@ pub fn julian_date_ut1(time: DateTime<Utc>) -> f64 {
 /// Computes Local Sidereal Time (Greenwich Mean Sidereal Time + East Longitude) in radians
 pub fn calculate_local_sidereal_time(time: DateTime<Utc>, lon_deg: f64) -> f64 {
     let d = julian_date_ut1(time) - 2451545.0;
-    // GMST in degrees
-    let gmst_deg = (280.46061837 + 360.98564736629 * d) % 360.0;
+    // GMST in degrees, IAU 1982 (Vallado eq. 3-47) including the T^2 and T^3 terms: dropping
+    // them costs ~0.09 arcsec (~3 m) in 2026 and grows quadratically.
+    let t = d / 36_525.0;
+    let gmst_deg = (280.46061837 + 360.98564736629 * d + 0.000387933 * t * t
+        - t * t * t / 38_710_000.0)
+        % 360.0;
     let gmst = if gmst_deg < 0.0 {
         gmst_deg + 360.0
     } else {
@@ -2046,4 +2052,614 @@ pub fn scan_decay_watch(
         threshold_perigee_km: max_perigee_km,
         objects,
     }
+}
+
+/// Converts a Cartesian TEME state (km, km/s) into classical Keplerian elements.
+/// Delegates to `osculating_elements` (spec 7.6 angle folding) so state and transform endpoints agree.
+pub fn cartesian_to_keplerian(pos_eci: [f64; 3], vel_eci: [f64; 3]) -> ClassicalKeplerianElements {
+    let mu = 398_600.441_8; // Earth gravitational parameter km^3 / s^2
+    let o = osculating_elements(pos_eci, vel_eci);
+    let (perigee_altitude_km, apogee_altitude_km) = apsis_altitudes_km(
+        o.semi_major_axis_km,
+        o.eccentricity,
+        o.inclination_deg,
+        o.arg_of_perigee_deg,
+    );
+    ClassicalKeplerianElements {
+        semi_major_axis_km: o.semi_major_axis_km,
+        eccentricity: o.eccentricity,
+        inclination_deg: o.inclination_deg,
+        raan_deg: o.raan_deg,
+        arg_of_perigee_deg: o.arg_of_perigee_deg,
+        true_anomaly_deg: o.true_anomaly_deg,
+        mean_anomaly_deg: o.mean_anomaly_deg,
+        orbital_period_minutes: 2.0
+            * std::f64::consts::PI
+            * (o.semi_major_axis_km.abs().powi(3) / mu).sqrt()
+            / 60.0,
+        perigee_altitude_km,
+        apogee_altitude_km,
+    }
+}
+
+/// Solves Kepler's equation M = E - e*sin(E) for Eccentric Anomaly, then computes True Anomaly (rad)
+pub fn solve_kepler_equation(mean_anomaly_rad: f64, eccentricity: f64) -> f64 {
+    let m = mean_anomaly_rad.rem_euclid(2.0 * std::f64::consts::PI);
+    let mut e_anom = if eccentricity < 0.8 {
+        m
+    } else {
+        std::f64::consts::PI
+    };
+
+    for _ in 0..60 {
+        let f = e_anom - eccentricity * e_anom.sin() - m;
+        let f_prime = 1.0 - eccentricity * e_anom.cos();
+        let delta = f / f_prime;
+        e_anom -= delta;
+        if delta.abs() < 1e-13 {
+            break;
+        }
+    }
+
+    let cos_e = e_anom.cos();
+    let sin_e = e_anom.sin();
+    let cos_nu = (cos_e - eccentricity) / (1.0 - eccentricity * cos_e);
+    let sin_nu = ((1.0 - eccentricity * eccentricity).max(0.0).sqrt() * sin_e)
+        / (1.0 - eccentricity * cos_e);
+    let mut nu = sin_nu.atan2(cos_nu);
+    if nu < 0.0 {
+        nu += 2.0 * std::f64::consts::PI;
+    }
+    nu
+}
+
+/// Converts Classical Keplerian Elements into Cartesian State Vector in ECI (TEME) frame
+pub fn keplerian_to_cartesian(
+    a: f64,
+    e: f64,
+    inc_deg: f64,
+    raan_deg: f64,
+    arg_pe_deg: f64,
+    true_anomaly_deg: f64,
+) -> Result<CartesianState, AppError> {
+    if a <= 0.0 {
+        return Err(AppError::BadRequest(
+            "Semi-major axis must be positive for bound orbits".to_string(),
+        ));
+    }
+    if !(0.0..1.0).contains(&e) {
+        return Err(AppError::BadRequest(
+            "Eccentricity must be in range [0, 1) for bound elliptic orbits".to_string(),
+        ));
+    }
+    let mu = 398_600.441_8;
+    let p = a * (1.0 - e * e);
+    let nu = true_anomaly_deg.to_radians();
+    let r = p / (1.0 + e * nu.cos());
+
+    // Perifocal state
+    let r_pqw = [r * nu.cos(), r * nu.sin(), 0.0];
+    let v_factor = (mu / p).sqrt();
+    let v_pqw = [-v_factor * nu.sin(), v_factor * (e + nu.cos()), 0.0];
+
+    // Transformation PQW -> ECI: Rz(-raan) * Rx(-inc) * Rz(-arg_pe)
+    let raan = raan_deg.to_radians();
+    let inc = inc_deg.to_radians();
+    let arg_pe = arg_pe_deg.to_radians();
+
+    let c_raan = raan.cos();
+    let s_raan = raan.sin();
+    let c_inc = inc.cos();
+    let s_inc = inc.sin();
+    let c_pe = arg_pe.cos();
+    let s_pe = arg_pe.sin();
+
+    // Basis vectors of perifocal frame in ECI
+    let p_hat = [
+        c_raan * c_pe - s_raan * s_pe * c_inc,
+        s_raan * c_pe + c_raan * s_pe * c_inc,
+        s_pe * s_inc,
+    ];
+    let q_hat = [
+        -c_raan * s_pe - s_raan * c_pe * c_inc,
+        -s_raan * s_pe + c_raan * c_pe * c_inc,
+        c_pe * s_inc,
+    ];
+
+    let pos_eci = [
+        r_pqw[0] * p_hat[0] + r_pqw[1] * q_hat[0],
+        r_pqw[0] * p_hat[1] + r_pqw[1] * q_hat[1],
+        r_pqw[0] * p_hat[2] + r_pqw[1] * q_hat[2],
+    ];
+
+    let vel_eci = [
+        v_pqw[0] * p_hat[0] + v_pqw[1] * q_hat[0],
+        v_pqw[0] * p_hat[1] + v_pqw[1] * q_hat[1],
+        v_pqw[0] * p_hat[2] + v_pqw[1] * q_hat[2],
+    ];
+
+    Ok(CartesianState {
+        position_km: pos_eci,
+        velocity_kms: vel_eci,
+    })
+}
+
+/// Converts Classical Keplerian Elements into Singularity-Free Modified Equinoctial Elements (p, f, g, h, k, L)
+pub fn keplerian_to_equinoctial(
+    kep: &ClassicalKeplerianElements,
+    retrograde_factor: Option<i32>,
+) -> ModifiedEquinoctialElements {
+    let p = kep.semi_major_axis_km * (1.0 - kep.eccentricity * kep.eccentricity);
+    let inc_rad = kep.inclination_deg.to_radians();
+    let raan_rad = kep.raan_deg.to_radians();
+    let arg_pe_rad = kep.arg_of_perigee_deg.to_radians();
+    let nu_rad = kep.true_anomaly_deg.to_radians();
+    let m_rad = kep.mean_anomaly_deg.to_radians();
+
+    let i_factor = match retrograde_factor {
+        Some(-1) => -1,
+        Some(_) => 1,
+        None => {
+            if kep.inclination_deg > 90.0 {
+                -1
+            } else {
+                1
+            }
+        }
+    };
+
+    let (f, g, h, k, l_rad, lambda_rad) = if i_factor == 1 {
+        let tan_half_i = (inc_rad / 2.0).tan();
+        let f = kep.eccentricity * (arg_pe_rad + raan_rad).cos();
+        let g = kep.eccentricity * (arg_pe_rad + raan_rad).sin();
+        let h = tan_half_i * raan_rad.cos();
+        let k = tan_half_i * raan_rad.sin();
+        let l_rad = (raan_rad + arg_pe_rad + nu_rad).rem_euclid(2.0 * std::f64::consts::PI);
+        let lambda_rad = (raan_rad + arg_pe_rad + m_rad).rem_euclid(2.0 * std::f64::consts::PI);
+        (f, g, h, k, l_rad, lambda_rad)
+    } else {
+        let cot_half_i = 1.0 / (inc_rad / 2.0).tan();
+        let f = kep.eccentricity * (arg_pe_rad - raan_rad).cos();
+        let g = kep.eccentricity * (arg_pe_rad - raan_rad).sin();
+        let h = cot_half_i * raan_rad.cos();
+        let k = cot_half_i * raan_rad.sin();
+        let l_rad = (-raan_rad + arg_pe_rad + nu_rad).rem_euclid(2.0 * std::f64::consts::PI);
+        let lambda_rad = (-raan_rad + arg_pe_rad + m_rad).rem_euclid(2.0 * std::f64::consts::PI);
+        (f, g, h, k, l_rad, lambda_rad)
+    };
+
+    ModifiedEquinoctialElements {
+        p_km: p,
+        f,
+        g,
+        h,
+        k,
+        true_longitude_deg: l_rad.to_degrees(),
+        mean_longitude_deg: lambda_rad.to_degrees(),
+        retrograde_factor: i_factor,
+    }
+}
+
+/// Converts Modified Equinoctial Elements into Classical Keplerian Elements
+pub fn equinoctial_to_keplerian(
+    mee: &ModifiedEquinoctialElements,
+) -> Result<ClassicalKeplerianElements, AppError> {
+    let e = (mee.f * mee.f + mee.g * mee.g).sqrt();
+    if e >= 1.0 {
+        return Err(AppError::BadRequest(
+            "Modified equinoctial eccentricity sqrt(f^2 + g^2) must be < 1 for bound orbits"
+                .to_string(),
+        ));
+    }
+    let a = mee.p_km / (1.0 - e * e);
+    let i_factor = if mee.retrograde_factor == -1 { -1 } else { 1 };
+    let tan_half_i = (mee.h * mee.h + mee.k * mee.k).sqrt();
+
+    let inc_rad = if i_factor == 1 {
+        2.0 * tan_half_i.atan()
+    } else {
+        2.0 * (1.0 / tan_half_i).atan()
+    };
+
+    let raan_rad = mee.k.atan2(mee.h).rem_euclid(2.0 * std::f64::consts::PI);
+    let varpi_rad = mee.g.atan2(mee.f).rem_euclid(2.0 * std::f64::consts::PI);
+
+    let arg_pe_rad = if i_factor == 1 {
+        (varpi_rad - raan_rad).rem_euclid(2.0 * std::f64::consts::PI)
+    } else {
+        (varpi_rad + raan_rad).rem_euclid(2.0 * std::f64::consts::PI)
+    };
+
+    let nu_rad =
+        (mee.true_longitude_deg.to_radians() - varpi_rad).rem_euclid(2.0 * std::f64::consts::PI);
+
+    // Compute mean anomaly from nu and e
+    let cos_e = (e + nu_rad.cos()) / (1.0 + e * nu_rad.cos());
+    let sin_e = ((1.0 - e * e).max(0.0).sqrt() * nu_rad.sin()) / (1.0 + e * nu_rad.cos());
+    let e_anom_rad = sin_e.atan2(cos_e);
+    let m_rad = (e_anom_rad - e * e_anom_rad.sin()).rem_euclid(2.0 * std::f64::consts::PI);
+
+    let mu = 398_600.441_8;
+    let orbital_period_minutes = (2.0 * std::f64::consts::PI * (a.powi(3) / mu).sqrt()) / 60.0;
+    let (perigee_altitude_km, apogee_altitude_km) =
+        apsis_altitudes_km(a, e, inc_rad.to_degrees(), arg_pe_rad.to_degrees());
+
+    Ok(ClassicalKeplerianElements {
+        semi_major_axis_km: a,
+        eccentricity: e,
+        inclination_deg: inc_rad.to_degrees(),
+        raan_deg: raan_rad.to_degrees(),
+        arg_of_perigee_deg: arg_pe_rad.to_degrees(),
+        true_anomaly_deg: nu_rad.to_degrees(),
+        mean_anomaly_deg: m_rad.to_degrees(),
+        orbital_period_minutes,
+        perigee_altitude_km,
+        apogee_altitude_km,
+    })
+}
+
+/// Unified element transformation: converts between Cartesian, Classical Keplerian, and Modified Equinoctial Elements
+pub fn transform_orbital_elements(
+    req: &ElementTransformRequest,
+) -> Result<ElementTransformResponse, AppError> {
+    if let Some(cart) = &req.cartesian {
+        let keplerian = cartesian_to_keplerian(cart.position_km, cart.velocity_kms);
+        if !(keplerian.semi_major_axis_km > 0.0 && keplerian.eccentricity < 1.0) {
+            return Err(AppError::BadRequest(
+                "Cartesian state is not a bound elliptic orbit (need a > 0 and e < 1)".to_string(),
+            ));
+        }
+        let equinoctial = keplerian_to_equinoctial(&keplerian, None);
+        Ok(ElementTransformResponse {
+            cartesian: cart.clone(),
+            keplerian,
+            equinoctial,
+        })
+    } else if let Some(kep) = &req.keplerian {
+        let nu_deg = if let Some(nu) = kep.true_anomaly_deg {
+            nu
+        } else if let Some(m) = kep.mean_anomaly_deg {
+            solve_kepler_equation(m.to_radians(), kep.eccentricity).to_degrees()
+        } else {
+            return Err(AppError::BadRequest(
+                "keplerian input requires trueAnomalyDeg or meanAnomalyDeg".to_string(),
+            ));
+        };
+
+        let cartesian = keplerian_to_cartesian(
+            kep.semi_major_axis_km,
+            kep.eccentricity,
+            kep.inclination_deg,
+            kep.raan_deg,
+            kep.arg_of_perigee_deg,
+            nu_deg,
+        )?;
+
+        let full_keplerian = cartesian_to_keplerian(cartesian.position_km, cartesian.velocity_kms);
+        let equinoctial = keplerian_to_equinoctial(&full_keplerian, None);
+
+        Ok(ElementTransformResponse {
+            cartesian,
+            keplerian: full_keplerian,
+            equinoctial,
+        })
+    } else if let Some(eq) = &req.equinoctial {
+        let true_long = if let Some(l) = eq.true_longitude_deg {
+            l
+        } else if let Some(lambda) = eq.mean_longitude_deg {
+            let e = (eq.f * eq.f + eq.g * eq.g).sqrt();
+            let varpi = eq.g.atan2(eq.f).to_degrees();
+            let m_deg = (lambda - varpi).rem_euclid(360.0);
+            let nu_deg = solve_kepler_equation(m_deg.to_radians(), e).to_degrees();
+            (varpi + nu_deg).rem_euclid(360.0)
+        } else {
+            return Err(AppError::BadRequest(
+                "equinoctial input requires trueLongitudeDeg or meanLongitudeDeg".to_string(),
+            ));
+        };
+
+        let mee = ModifiedEquinoctialElements {
+            p_km: eq.p_km,
+            f: eq.f,
+            g: eq.g,
+            h: eq.h,
+            k: eq.k,
+            true_longitude_deg: true_long,
+            mean_longitude_deg: eq.mean_longitude_deg.unwrap_or(0.0),
+            retrograde_factor: eq.retrograde_factor.unwrap_or(1),
+        };
+
+        let keplerian = equinoctial_to_keplerian(&mee)?;
+        let cartesian = keplerian_to_cartesian(
+            keplerian.semi_major_axis_km,
+            keplerian.eccentricity,
+            keplerian.inclination_deg,
+            keplerian.raan_deg,
+            keplerian.arg_of_perigee_deg,
+            keplerian.true_anomaly_deg,
+        )?;
+        let full_equinoctial = keplerian_to_equinoctial(&keplerian, Some(mee.retrograde_factor));
+
+        Ok(ElementTransformResponse {
+            cartesian,
+            keplerian: full_equinoctial_round(keplerian),
+            equinoctial: full_equinoctial,
+        })
+    } else {
+        Err(AppError::BadRequest(
+            "One of 'cartesian', 'keplerian', or 'equinoctial' must be provided in request"
+                .to_string(),
+        ))
+    }
+}
+
+fn full_equinoctial_round(mut k: ClassicalKeplerianElements) -> ClassicalKeplerianElements {
+    k.true_anomaly_deg = k.true_anomaly_deg.rem_euclid(360.0);
+    k.mean_anomaly_deg = k.mean_anomaly_deg.rem_euclid(360.0);
+    k.raan_deg = k.raan_deg.rem_euclid(360.0);
+    k.arg_of_perigee_deg = k.arg_of_perigee_deg.rem_euclid(360.0);
+    k
+}
+
+/// Converts ECF position [X, Y, Z] to ECI position using Local/Greenwich Sidereal Time
+pub fn ecf_to_eci(ecf: [f64; 3], lst_rad: f64) -> [f64; 3] {
+    let x = ecf[0] * lst_rad.cos() - ecf[1] * lst_rad.sin();
+    let y = ecf[0] * lst_rad.sin() + ecf[1] * lst_rad.cos();
+    let z = ecf[2];
+    [x, y, z]
+}
+
+/// Converts ECF velocity vector to ECI velocity vector accounting for Earth rotation kinematics
+pub fn ecf_to_eci_velocity(eci_pos: [f64; 3], ecf_vel: [f64; 3], lst_rad: f64) -> [f64; 3] {
+    let omega_e = 7.2921151467e-5; // rad/s
+    let vx_eff = ecf_vel[0] * lst_rad.cos() - ecf_vel[1] * lst_rad.sin();
+    let vy_eff = ecf_vel[0] * lst_rad.sin() + ecf_vel[1] * lst_rad.cos();
+    let vz_eff = ecf_vel[2];
+
+    let vx_eci = vx_eff - omega_e * eci_pos[1];
+    let vy_eci = vy_eff + omega_e * eci_pos[0];
+    let vz_eci = vz_eff;
+
+    [vx_eci, vy_eci, vz_eci]
+}
+
+/// Computes observer ECEF Cartesian coordinates from WGS-84 Geodetic Latitude, Longitude, and Altitude
+pub fn observer_geodetic_to_ecf(lat_deg: f64, lon_deg: f64, alt_km: f64) -> [f64; 3] {
+    let lat_rad = lat_deg.to_radians();
+    let lon_rad = lon_deg.to_radians();
+    let re = 6378.137;
+    let f = 1.0 / 298.257223563;
+    let c = 1.0 / (1.0 - (2.0 * f - f * f) * lat_rad.sin().powi(2)).sqrt();
+    let obs_x = (re * c + alt_km) * lat_rad.cos() * lon_rad.cos();
+    let obs_y = (re * c + alt_km) * lat_rad.cos() * lon_rad.sin();
+    let obs_z = (re * (c * (1.0 - f).powi(2)) + alt_km) * lat_rad.sin();
+    [obs_x, obs_y, obs_z]
+}
+
+/// Transforms ECEF satellite position into Topocentric Horizon SEZ (South, East, Zenith) coordinates
+pub fn ecf_to_sez(sat_ecf: [f64; 3], lat_deg: f64, lon_deg: f64, alt_km: f64) -> [f64; 3] {
+    let obs = observer_geodetic_to_ecf(lat_deg, lon_deg, alt_km);
+    let rx = sat_ecf[0] - obs[0];
+    let ry = sat_ecf[1] - obs[1];
+    let rz = sat_ecf[2] - obs[2];
+
+    let lat_rad = lat_deg.to_radians();
+    let lon_rad = lon_deg.to_radians();
+
+    let s = lat_rad.sin() * lon_rad.cos() * rx + lat_rad.sin() * lon_rad.sin() * ry
+        - lat_rad.cos() * rz;
+    let e = -lon_rad.sin() * rx + lon_rad.cos() * ry;
+    let z = lat_rad.cos() * lon_rad.cos() * rx
+        + lat_rad.cos() * lon_rad.sin() * ry
+        + lat_rad.sin() * rz;
+    [s, e, z]
+}
+
+/// Transforms ECEF velocity vector into Topocentric Horizon SEZ velocity
+pub fn ecf_to_sez_velocity(vel_ecf: [f64; 3], lat_deg: f64, lon_deg: f64) -> [f64; 3] {
+    let lat_rad = lat_deg.to_radians();
+    let lon_rad = lon_deg.to_radians();
+    let vx = vel_ecf[0];
+    let vy = vel_ecf[1];
+    let vz = vel_ecf[2];
+
+    let vs = lat_rad.sin() * lon_rad.cos() * vx + lat_rad.sin() * lon_rad.sin() * vy
+        - lat_rad.cos() * vz;
+    let ve = -lon_rad.sin() * vx + lon_rad.cos() * vy;
+    let vz_top = lat_rad.cos() * lon_rad.cos() * vx
+        + lat_rad.cos() * lon_rad.sin() * vy
+        + lat_rad.sin() * vz;
+    [vs, ve, vz_top]
+}
+
+/// Transforms Topocentric Horizon SEZ slant vector into ECEF satellite position
+pub fn sez_to_ecf(sez: [f64; 3], lat_deg: f64, lon_deg: f64, alt_km: f64) -> [f64; 3] {
+    let obs = observer_geodetic_to_ecf(lat_deg, lon_deg, alt_km);
+    let lat_rad = lat_deg.to_radians();
+    let lon_rad = lon_deg.to_radians();
+
+    let s = sez[0];
+    let e = sez[1];
+    let z = sez[2];
+
+    // Transpose of direction cosine rotation matrix
+    let rx =
+        lat_rad.sin() * lon_rad.cos() * s - lon_rad.sin() * e + lat_rad.cos() * lon_rad.cos() * z;
+    let ry =
+        lat_rad.sin() * lon_rad.sin() * s + lon_rad.cos() * e + lat_rad.cos() * lon_rad.sin() * z;
+    let rz = -lat_rad.cos() * s + lat_rad.sin() * z;
+
+    [obs[0] + rx, obs[1] + ry, obs[2] + rz]
+}
+
+/// Transforms Topocentric Horizon SEZ velocity vector into ECEF velocity
+pub fn sez_to_ecf_velocity(vel_sez: [f64; 3], lat_deg: f64, lon_deg: f64) -> [f64; 3] {
+    let lat_rad = lat_deg.to_radians();
+    let lon_rad = lon_deg.to_radians();
+    let vs = vel_sez[0];
+    let ve = vel_sez[1];
+    let vz = vel_sez[2];
+
+    let vx = lat_rad.sin() * lon_rad.cos() * vs - lon_rad.sin() * ve
+        + lat_rad.cos() * lon_rad.cos() * vz;
+    let vy = lat_rad.sin() * lon_rad.sin() * vs
+        + lon_rad.cos() * ve
+        + lat_rad.cos() * lon_rad.sin() * vz;
+    let vz_ecf = -lat_rad.cos() * vs + lat_rad.sin() * vz;
+
+    [vx, vy, vz_ecf]
+}
+
+/// Transforms Cartesian state vectors across ECI (TEME), ECEF (WGS-84), SEZ, and NED frames
+pub fn transform_coordinate_frame(
+    req: &FrameTransformRequest,
+) -> Result<FrameTransformResponse, AppError> {
+    let lst = calculate_local_sidereal_time(req.epoch, 0.0);
+
+    // Step 1: Convert source frame to ECEF
+    let (pos_ecef, vel_ecef) = match req.source_frame {
+        CoordinateFrame::EcefWgs84 => (req.position, req.velocity),
+        CoordinateFrame::EciTeme => {
+            let pos_ecf = eci_to_ecf(req.position, lst);
+            let vel_ecf = req
+                .velocity
+                .map(|v| eci_to_ecf_velocity(req.position, v, lst));
+            (pos_ecf, vel_ecf)
+        }
+        CoordinateFrame::TopocentricSez => {
+            let lat = req.observer_lat_deg.ok_or_else(|| {
+                AppError::BadRequest(
+                    "observerLatDeg is required when sourceFrame is TOPOCENTRIC_SEZ".to_string(),
+                )
+            })?;
+            let lon = req.observer_lon_deg.ok_or_else(|| {
+                AppError::BadRequest(
+                    "observerLonDeg is required when sourceFrame is TOPOCENTRIC_SEZ".to_string(),
+                )
+            })?;
+            let alt_km = req.observer_alt_m.unwrap_or(0.0) / 1000.0;
+            let pos_ecf = sez_to_ecf(req.position, lat, lon, alt_km);
+            let vel_ecf = req.velocity.map(|v| sez_to_ecf_velocity(v, lat, lon));
+            (pos_ecf, vel_ecf)
+        }
+        CoordinateFrame::TopocentricNed => {
+            let lat = req.observer_lat_deg.ok_or_else(|| {
+                AppError::BadRequest(
+                    "observerLatDeg is required when sourceFrame is TOPOCENTRIC_NED".to_string(),
+                )
+            })?;
+            let lon = req.observer_lon_deg.ok_or_else(|| {
+                AppError::BadRequest(
+                    "observerLonDeg is required when sourceFrame is TOPOCENTRIC_NED".to_string(),
+                )
+            })?;
+            let alt_km = req.observer_alt_m.unwrap_or(0.0) / 1000.0;
+            // NED [North, East, Down] -> SEZ [-North, East, -Down]
+            let pos_sez = [-req.position[0], req.position[1], -req.position[2]];
+            let pos_ecf = sez_to_ecf(pos_sez, lat, lon, alt_km);
+            let vel_ecf = req.velocity.map(|v| {
+                let v_sez = [-v[0], v[1], -v[2]];
+                sez_to_ecf_velocity(v_sez, lat, lon)
+            });
+            (pos_ecf, vel_ecf)
+        }
+    };
+
+    // Step 2: Convert ECEF to target frame
+    let (target_pos, target_vel) = match req.target_frame {
+        CoordinateFrame::EcefWgs84 => (pos_ecef, vel_ecef),
+        CoordinateFrame::EciTeme => {
+            let pos_eci = ecf_to_eci(pos_ecef, lst);
+            let vel_eci = vel_ecef.map(|v| ecf_to_eci_velocity(pos_eci, v, lst));
+            (pos_eci, vel_eci)
+        }
+        CoordinateFrame::TopocentricSez => {
+            let lat = req.observer_lat_deg.ok_or_else(|| {
+                AppError::BadRequest(
+                    "observerLatDeg is required when targetFrame is TOPOCENTRIC_SEZ".to_string(),
+                )
+            })?;
+            let lon = req.observer_lon_deg.ok_or_else(|| {
+                AppError::BadRequest(
+                    "observerLonDeg is required when targetFrame is TOPOCENTRIC_SEZ".to_string(),
+                )
+            })?;
+            let alt_km = req.observer_alt_m.unwrap_or(0.0) / 1000.0;
+            let pos_sez = ecf_to_sez(pos_ecef, lat, lon, alt_km);
+            let vel_sez = vel_ecef.map(|v| ecf_to_sez_velocity(v, lat, lon));
+            (pos_sez, vel_sez)
+        }
+        CoordinateFrame::TopocentricNed => {
+            let lat = req.observer_lat_deg.ok_or_else(|| {
+                AppError::BadRequest(
+                    "observerLatDeg is required when targetFrame is TOPOCENTRIC_NED".to_string(),
+                )
+            })?;
+            let lon = req.observer_lon_deg.ok_or_else(|| {
+                AppError::BadRequest(
+                    "observerLonDeg is required when targetFrame is TOPOCENTRIC_NED".to_string(),
+                )
+            })?;
+            let alt_km = req.observer_alt_m.unwrap_or(0.0) / 1000.0;
+            let pos_sez = ecf_to_sez(pos_ecef, lat, lon, alt_km);
+            let vel_sez = vel_ecef.map(|v| ecf_to_sez_velocity(v, lat, lon));
+            // SEZ [South, East, Zenith] -> NED [-South, East, -Zenith]
+            let pos_ned = [-pos_sez[0], pos_sez[1], -pos_sez[2]];
+            let vel_ned = vel_sez.map(|v| [-v[0], v[1], -v[2]]);
+            (pos_ned, vel_ned)
+        }
+    };
+
+    // Geodetic sub-satellite coordinates
+    let (geo_lat, geo_lon, geo_alt) = ecf_to_geodetic(pos_ecef);
+    let geodetic = Some(GeodeticCoordinates {
+        latitude_deg: (geo_lat * 10000.0).round() / 10000.0,
+        longitude_deg: (geo_lon * 10000.0).round() / 10000.0,
+        altitude_km: (geo_alt * 100.0).round() / 100.0,
+    });
+
+    // Optional look angles if observer position is provided
+    let look_angles = if let (Some(lat), Some(lon)) = (req.observer_lat_deg, req.observer_lon_deg) {
+        let alt_km = req.observer_alt_m.unwrap_or(0.0) / 1000.0;
+        let pos_sez = ecf_to_sez(pos_ecef, lat, lon, alt_km);
+        let range =
+            (pos_sez[0] * pos_sez[0] + pos_sez[1] * pos_sez[1] + pos_sez[2] * pos_sez[2]).sqrt();
+        let el = if range > 1e-6 {
+            (pos_sez[2] / range).clamp(-1.0, 1.0).asin().to_degrees()
+        } else {
+            0.0
+        };
+        let mut az = pos_sez[1].atan2(-pos_sez[0]).to_degrees();
+        if az < 0.0 {
+            az += 360.0;
+        }
+        let range_rate = vel_ecef.and_then(|v| {
+            if range > 1e-6 {
+                let v_sez = ecf_to_sez_velocity(v, lat, lon);
+                Some(
+                    (pos_sez[0] * v_sez[0] + pos_sez[1] * v_sez[1] + pos_sez[2] * v_sez[2]) / range,
+                )
+            } else {
+                None
+            }
+        });
+        Some(LookAnglesDetail {
+            azimuth_deg: (az * 10000.0).round() / 10000.0,
+            elevation_deg: (el * 10000.0).round() / 10000.0,
+            slant_range_km: (range * 100.0).round() / 100.0,
+            range_rate_kms: range_rate.map(|rr| (rr * 10000.0).round() / 10000.0),
+        })
+    } else {
+        None
+    };
+
+    Ok(FrameTransformResponse {
+        source_frame: req.source_frame,
+        target_frame: req.target_frame,
+        epoch: req.epoch,
+        position: target_pos,
+        velocity: target_vel,
+        geodetic,
+        look_angles,
+    })
 }

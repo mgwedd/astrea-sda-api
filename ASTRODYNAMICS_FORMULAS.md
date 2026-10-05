@@ -1006,3 +1006,97 @@ z_i = \frac{|x_i - \tilde{X}|}{1.4826 \cdot \text{MAD}}
 $$
 
 An anomaly is flagged when both the robust $z$-score exceeds the statistical sigma threshold ($z_i \ge z_{\text{threshold}}$) and the absolute orbital change exceeds physical detection limits ($|\Delta a| \ge \Delta a_{\text{min}}$ or $|\Delta i| \ge \Delta i_{\text{min}}$).
+
+## 12. Element Representations & Coordinate Frame Transforms (`/v1/astrodynamics/transforms/*`)
+
+Implemented in `cartesian_to_keplerian`, `keplerian_to_cartesian`, `keplerian_to_equinoctial`, `equinoctial_to_keplerian`, `solve_kepler_equation`, `transform_orbital_elements`, and `transform_coordinate_frame` in `src/services/astrodynamics.rs`. `GET /v1/satellites/{id}/state` uses the same `cartesian_to_keplerian` routine as Section 7. All elements are osculating, in the TEME/ECI frame, with $\mu_\oplus = 398600.4418\ \text{km}^3/\text{s}^2$.
+
+### 12.1 Keplerian to Cartesian (Perifocal Rotation)
+Semi-latus rectum and radius:
+
+$$p = a(1 - e^2), \qquad r = \frac{p}{1 + e\cos\nu}$$
+
+Perifocal (PQW) state:
+
+$$\vec{r}_{PQW} = r\begin{bmatrix}\cos\nu \\ \sin\nu \\ 0\end{bmatrix}, \qquad \vec{v}_{PQW} = \sqrt{\frac{\mu}{p}}\begin{bmatrix}-\sin\nu \\ e + \cos\nu \\ 0\end{bmatrix}$$
+
+The PQW to ECI rotation is $\mathbf{R}_z(-\Omega)\,\mathbf{R}_x(-i)\,\mathbf{R}_z(-\omega)$. Its first two columns (perifocal axes $\hat{P}$, $\hat{Q}$ in ECI) are:
+
+$$\hat{P} = \begin{bmatrix}\cos\Omega\cos\omega - \sin\Omega\sin\omega\cos i \\ \sin\Omega\cos\omega + \cos\Omega\sin\omega\cos i \\ \sin\omega\sin i\end{bmatrix}, \qquad \hat{Q} = \begin{bmatrix}-\cos\Omega\sin\omega - \sin\Omega\cos\omega\cos i \\ -\sin\Omega\sin\omega + \cos\Omega\cos\omega\cos i \\ \cos\omega\sin i\end{bmatrix}$$
+
+$$\vec{r}_{ECI} = r_{P}\hat{P} + r_{Q}\hat{Q}, \qquad \vec{v}_{ECI} = v_{P}\hat{P} + v_{Q}\hat{Q}$$
+
+Inputs are validated: $a > 0$ and $0 \le e < 1$ (bound elliptic orbits only). Hyperbolic and parabolic cases return HTTP 400.
+
+### 12.2 Cartesian to Keplerian (Singular Cases)
+The general algorithm is Section 7. `cartesian_to_keplerian` additionally handles the classical singularities:
+
+- **Equatorial** ($|\vec{n}| \approx 0$): $\Omega = 0$, and $\omega = \text{atan2}(e_y, e_x)$ (longitude of periapsis) for $e > 10^{-6}$.
+- **Circular inclined** ($e \approx 0$): $\omega = 0$ and $\nu$ becomes the argument of latitude $u = \arccos\left(\frac{\vec{n}\cdot\vec{r}}{|\vec{n}||\vec{r}|}\right)$, with $u \to 2\pi - u$ when $r_z < 0$.
+- **Circular equatorial**: $\nu$ becomes the true longitude $\text{atan2}(r_y, r_x)$.
+
+Tolerances: $|\vec{n}| < 10^{-8}$, $e < 10^{-6}$. Angles in these degenerate cases are conventions, not physical quantities. Only the combined longitude is well defined, which is why Section 12.3 exists.
+
+### 12.3 Modified Equinoctial Elements (MEE)
+Singularity-free for $e \to 0$ and $i \to 0$ (Walker, Ireland & Owens 1985; Broucke & Cefola 1972):
+
+$$p = a(1 - e^2)$$
+
+$$f = e\cos(\omega + I\Omega), \qquad g = e\sin(\omega + I\Omega)$$
+
+$$h = \tan^{I}\!\left(\frac{i}{2}\right)\cos\Omega, \qquad k = \tan^{I}\!\left(\frac{i}{2}\right)\sin\Omega$$
+
+$$L = \Omega\cdot I + \omega + \nu \pmod{2\pi}$$
+
+The retrograde factor is $I = +1$ for $0 \le i < 90^\circ$ and $I = -1$ for $90^\circ < i \le 180^\circ$ (the response reports it as `retrogradeFactor`). For $I = -1$, $\tan^{-1}(i/2) = \cot(i/2)$, and both $\Omega$ terms flip sign: $L = -\Omega + \omega + \nu$.
+
+The mean longitude is $\lambda = I\Omega + \omega + M$ (same sign convention as $L$).
+
+**Inverse** (`equinoctial_to_keplerian`):
+
+$$e = \sqrt{f^2 + g^2}, \qquad a = \frac{p}{1 - e^2}$$
+
+$$\tan\frac{i}{2} = \sqrt{h^2 + k^2}\ \ (I = +1), \qquad \cot\frac{i}{2} = \sqrt{h^2 + k^2}\ \ (I = -1)$$
+
+$$\Omega = \text{atan2}(k, h), \qquad \varpi = \text{atan2}(g, f), \qquad \omega = \varpi - I\Omega, \qquad \nu = L - \varpi$$
+
+where $\varpi$ is the longitude of periapsis ($\omega + I\Omega$). Inputs with $e \ge 1$ return HTTP 400.
+
+Note: when $h = k = 0$ (exactly equatorial, $I = +1$), $\Omega$ from $\text{atan2}(0, 0)$ is defined as $0$. Only $\varpi$ and $L$ carry physical meaning there, which is exactly what MEE preserves.
+
+### 12.4 Kepler's Equation (`solve_kepler_equation`)
+Given mean anomaly $M$ and eccentricity $e$, solve for the eccentric anomaly $E$:
+
+$$M = E - e\sin E$$
+
+Newton-Raphson on $f(E) = E - e\sin E - M$ with $f'(E) = 1 - e\cos E$. Initial guess is $E_0 = M$ for $e < 0.8$ and $E_0 = \pi$ otherwise. Iteration stops at $|\Delta E| < 10^{-13}$ or 60 iterations. True anomaly:
+
+$$\cos\nu = \frac{\cos E - e}{1 - e\cos E}, \qquad \sin\nu = \frac{\sqrt{1 - e^2}\sin E}{1 - e\cos E}, \qquad \nu = \text{atan2}(\sin\nu, \cos\nu)$$
+
+### 12.5 ECEF to Topocentric (SEZ and NED)
+The ECEF to SEZ rotation, observer position, and look angles are Section 2.5. Frame-transform endpoints add the following.
+
+**Inverse (SEZ to ECEF)** uses the transpose (a rotation matrix is orthogonal), then adds the observer position:
+
+$$\begin{bmatrix}r_x \\ r_y \\ r_z\end{bmatrix} = \begin{bmatrix}\sin\phi\cos\lambda & -\sin\lambda & \cos\phi\cos\lambda \\ \sin\phi\sin\lambda & \cos\lambda & \cos\phi\sin\lambda \\ -\cos\phi & 0 & \sin\phi\end{bmatrix}\begin{bmatrix}\rho_S \\ \rho_E \\ \rho_Z\end{bmatrix}, \qquad \vec{r}_{ECEF} = \vec{r}_{obs} + \vec{\rho}_{ECEF}$$
+
+**NED**: North-East-Down relates to SEZ by sign flips on the North and Zenith axes:
+
+$$\rho_N = -\rho_S, \qquad \rho_E = \rho_E, \qquad \rho_D = -\rho_Z$$
+
+**Velocity** in a topocentric frame is the ECEF velocity rotated with the same direction cosine matrix. It is a relative velocity w.r.t. the rotating Earth (the observer is fixed in ECEF), so no additional transport term is needed. Range rate:
+
+$$\dot{\rho} = \frac{\vec{\rho}_{SEZ}\cdot\vec{v}_{SEZ}}{|\vec{\rho}_{SEZ}|}$$
+
+### 12.6 Frame Chain and Velocity Inversion
+`transform_coordinate_frame` always routes through ECEF: source $\to$ ECEF $\to$ target. ECI to ECEF (position and velocity) is Section 2.3. The inverse (ECEF to ECI) transposes the rotation and reverses the transport term:
+
+$$\vec{r}_{ECI} = \mathbf{R}_z(\theta)^T\vec{r}_{ECEF}, \qquad \vec{v}_{ECI} = \mathbf{R}_z(\theta)^T\vec{v}_{ECEF} + \vec{\omega}_\oplus \times \vec{r}_{ECI}$$
+
+with $\vec{\omega}_\oplus \times \vec{r}_{ECI} = [-\omega_\oplus y,\ \omega_\oplus x,\ 0]^T$ and $\theta$ = GMST (Section 2.2). The response also returns WGS-84 geodetic coordinates via the Bowring method (Section 2.4).
+
+### 12.7 Numerical Tolerances and Limitations
+- **Round trips:** Keplerian to Cartesian to Keplerian reproduces $a$ to $10^{-5}$ km and $e$ to $10^{-9}$. Cartesian states round-trip to $10^{-5}$ km and $10^{-8}$ km/s (verified in `tests/transforms_tests.rs`).
+- **Independent oracle:** Vallado, *Fundamentals of Astrodynamics and Applications*, Example 2-5 (RV to COE) is reproduced within the textbook's printed precision.
+- **Frame accuracy:** the ECI/ECEF rotation uses GMST only (no polar motion, UT1-UTC, or nutation). Positional error relative to a full IAU-2006/2000A reduction is on the order of tens of metres at LEO, and larger for TEME vs. ICRF/J2000 comparisons. Do not treat this as an ICRF transform.
+- **Bound orbits only:** $a > 0$, $0 \le e < 1$.

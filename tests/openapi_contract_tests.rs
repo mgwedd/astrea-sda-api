@@ -104,6 +104,16 @@ fn test_openapi_schema_static_contract() {
         "Missing or invalid operationId for POST /v1/conjunctions/collision-probability"
     );
     assert!(
+        paths["/v1/astrodynamics/transforms/elements"]["post"]["operationId"].as_str()
+            == Some("transformOrbitalElements"),
+        "Missing or invalid operationId for POST /v1/astrodynamics/transforms/elements"
+    );
+    assert!(
+        paths["/v1/astrodynamics/transforms/frames"]["post"]["operationId"].as_str()
+            == Some("transformCoordinateFrames"),
+        "Missing or invalid operationId for POST /v1/astrodynamics/transforms/frames"
+    );
+    assert!(
         paths["/v1/pipelines/sync"]["post"]["operationId"].as_str() == Some("triggerPipelineSync"),
         "Missing or invalid operationId for POST /v1/pipelines/sync"
     );
