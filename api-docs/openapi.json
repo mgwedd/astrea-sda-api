@@ -557,17 +557,6 @@
             }
           },
           {
-            "name": "min_bstar",
-            "in": "query",
-            "description": "Minimum B* atmospheric drag coefficient threshold (default: 0.0001)",
-            "required": false,
-            "schema": {
-              "type": "number",
-              "format": "double",
-              "nullable": true
-            }
-          },
-          {
             "name": "limit",
             "in": "query",
             "description": "Maximum number of decaying objects to return (default: 50, max: 500)",
@@ -911,7 +900,7 @@
           "Satellites"
         ],
         "summary": "Get Satellite Atmospheric Drag & Decay Risk",
-        "description": "Evaluates perigee/apogee altitude, B* atmospheric drag decay rate, remaining orbital lifetime, and uncontrolled re-entry risk score. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).",
+        "description": "Evaluates perigee/apogee altitude above the WGS-84 ellipsoid, the re-entry regime and a risk score from perigee altitude alone. No lifetime is estimated because a TLE carries no ballistic coefficient. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).",
         "operationId": "getSatelliteDecayRisk",
         "parameters": [
           {
@@ -1106,6 +1095,16 @@
             "schema": {
               "type": "string",
               "format": "date-time",
+              "nullable": true
+            }
+          },
+          {
+            "name": "relativistic",
+            "in": "query",
+            "description": "Use the relativistic Doppler equation with gravitational shift (default: false, classical first-order)",
+            "required": false,
+            "schema": {
+              "type": "boolean",
               "nullable": true
             }
           }
@@ -1877,7 +1876,7 @@
           "Astrodynamics"
         ],
         "summary": "Predict Lunar Satellite Transits",
-        "description": "Predicts satellite silhouettes crossing in front of the Lunar disk for a ground station observer. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).",
+        "description": "Predicts satellite silhouettes crossing in front of the Lunar disk for a ground station observer. Uses a low-accuracy lunar series (position error up to ~2 degrees), so results are screening-level. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).",
         "operationId": "getLunarTransits",
         "parameters": [
           {
@@ -2272,17 +2271,20 @@
         "type": "object",
         "required": [
           "missDistanceKm",
-          "relativeVelocityKms"
+          "relativeVelocityKms",
+          "sigma1M",
+          "sigma2M"
         ],
         "properties": {
-          "combinedPositionUncertaintyM": {
+          "hardBodyRadiusM": {
             "type": "number",
             "format": "double",
             "nullable": true
           },
-          "hardBodyRadiusM": {
+          "missAngleDeg": {
             "type": "number",
             "format": "double",
+            "description": "Angle of the miss vector from the sigma_1 axis in degrees (default 0)",
             "nullable": true
           },
           "missDistanceKm": {
@@ -2292,6 +2294,16 @@
           "relativeVelocityKms": {
             "type": "number",
             "format": "double"
+          },
+          "sigma1M": {
+            "type": "number",
+            "format": "double",
+            "description": "Principal-axis 1-sigma position uncertainty in the encounter plane (metres), major axis"
+          },
+          "sigma2M": {
+            "type": "number",
+            "format": "double",
+            "description": "Principal-axis 1-sigma position uncertainty in the encounter plane (metres), minor axis"
           }
         }
       },
@@ -2301,7 +2313,9 @@
           "missDistanceKm",
           "relativeVelocityKms",
           "hardBodyRadiusM",
-          "combinedUncertaintyM",
+          "sigma1M",
+          "sigma2M",
+          "missAngleDeg",
           "collisionProbability",
           "riskCategory",
           "recommendation"
@@ -2311,11 +2325,11 @@
             "type": "number",
             "format": "double"
           },
-          "combinedUncertaintyM": {
+          "hardBodyRadiusM": {
             "type": "number",
             "format": "double"
           },
-          "hardBodyRadiusM": {
+          "missAngleDeg": {
             "type": "number",
             "format": "double"
           },
@@ -2332,6 +2346,14 @@
           },
           "riskCategory": {
             "type": "string"
+          },
+          "sigma1M": {
+            "type": "number",
+            "format": "double"
+          },
+          "sigma2M": {
+            "type": "number",
+            "format": "double"
           }
         }
       },
@@ -2428,7 +2450,6 @@
           "scannedSatellitesCount",
           "decayingSatellitesFound",
           "thresholdPerigeeKm",
-          "thresholdBstar",
           "objects"
         ],
         "properties": {
@@ -2445,10 +2466,6 @@
           "scannedSatellitesCount": {
             "type": "integer",
             "minimum": 0
-          },
-          "thresholdBstar": {
-            "type": "number",
-            "format": "double"
           },
           "thresholdPerigeeKm": {
             "type": "number",

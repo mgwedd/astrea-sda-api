@@ -87,8 +87,6 @@ pub struct StateVectorQueryParams {
 pub struct DecayWatchQueryParams {
     /// Maximum perigee altitude threshold in km to flag re-entry hazard (default: 300.0 km)
     pub max_perigee_km: Option<f64>,
-    /// Minimum B* atmospheric drag coefficient threshold (default: 0.0001)
-    pub min_bstar: Option<f64>,
     /// Maximum number of decaying objects to return (default: 50, max: 500)
     pub limit: Option<usize>,
 }
@@ -447,11 +445,12 @@ pub async fn get_overhead(
 
     let time = params.time.unwrap_or_else(Utc::now);
     let alt = params.alt.unwrap_or(0.0);
-    let time_bucket = time.timestamp() / 10; // Round time to 10-second buckets for cache reuse
-
     let cache_key = format!(
-        "overhead:{:.2}:{:.2}:{:.1}:{}",
-        params.lat, params.lon, alt, time_bucket
+        "overhead:{}:{}:{}:{}",
+        params.lat,
+        params.lon,
+        alt,
+        time.timestamp_millis()
     );
 
     let res = repo
@@ -510,7 +509,7 @@ pub async fn get_next_visible(
     let time_bucket = start_time.timestamp() / 60; // Round start time to 1-minute bucket for cache reuse
 
     let cache_key = format!(
-        "next_visible:{}:{:.2}:{:.2}:{:.1}:{:.1}:{}",
+        "next_visible:{}:{}:{}:{}:{}:{}",
         id, params.lat, params.lon, alt, threshold, time_bucket
     );
 
@@ -571,7 +570,6 @@ pub async fn get_ground_track(
         _ => (true, false),
     };
 
-    let time_bucket = start_time.timestamp() / 60;
     let cache_key = format!(
         "groundtrack:{}:{}:{}:{}:{}:{}:{}",
         id,
@@ -579,7 +577,7 @@ pub async fn get_ground_track(
         step_seconds,
         include_geojson,
         include_czml,
-        time_bucket,
+        start_time.timestamp_millis(),
         satellite.last_modified_date.timestamp()
     );
 
@@ -650,10 +648,13 @@ pub async fn get_satellite_illumination(
     let time = params.time.unwrap_or_else(Utc::now);
     let alt = params.alt.unwrap_or(0.0);
 
-    let time_bucket = time.timestamp() / 10;
     let cache_key = format!(
-        "illumination:{}:{:.2}:{:.2}:{:.1}:{}",
-        id, params.lat, params.lon, alt, time_bucket
+        "illumination:{}:{}:{}:{}:{}",
+        id,
+        params.lat,
+        params.lon,
+        alt,
+        time.timestamp_millis()
     );
 
     let res = repo
@@ -711,7 +712,7 @@ pub async fn search_conjunctions(
 
     let time_bucket = start_time.timestamp() / 60;
     let cache_key = format!(
-        "conjunctions:{}:{:.1}:{}:{}",
+        "conjunctions:{}:{}:{}:{}",
         satellites.len(),
         max_distance_km,
         duration_hours,
@@ -752,6 +753,8 @@ pub struct DopplerQueryParams {
     pub alt_km: Option<f64>,
     /// UTC timestamp for calculation epoch (defaults to current time if omitted)
     pub time: Option<DateTime<Utc>>,
+    /// Use the relativistic Doppler equation with gravitational shift (default: false, classical first-order)
+    pub relativistic: Option<bool>,
 }
 
 /// Get Satellite RF Doppler Shift
@@ -784,10 +787,18 @@ pub async fn get_satellite_doppler(
     let time = params.time.unwrap_or_else(Utc::now);
     let alt_km = params.alt_km.unwrap_or(0.0);
 
-    let time_bucket = time.timestamp() / 10;
+    let relativistic = params.relativistic.unwrap_or(false);
+
+    // Exact inputs: Doppler varies by tens of Hz per second, so no rounding or time bucketing
     let cache_key = format!(
-        "doppler:{}:{:.2}:{:.2}:{:.2}:{:.1}:{}",
-        id, params.center_freq_hz, params.lat, params.lon, alt_km, time_bucket
+        "doppler:{}:{}:{}:{}:{}:{}:{}",
+        id,
+        params.center_freq_hz,
+        params.lat,
+        params.lon,
+        alt_km,
+        time.timestamp_millis(),
+        relativistic
     );
 
     let res = repo
@@ -802,6 +813,7 @@ pub async fn get_satellite_doppler(
                     params.lon,
                     alt_km,
                     time,
+                    relativistic,
                 )
             })
             .await
@@ -946,7 +958,7 @@ pub async fn get_solar_transits(
 
 /// Predict Lunar Satellite Transits
 ///
-/// Predicts satellite silhouettes crossing in front of the Lunar disk for a ground station observer. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).
+/// Predicts satellite silhouettes crossing in front of the Lunar disk for a ground station observer. Uses a low-accuracy lunar series (position error up to ~2 degrees), so results are screening-level. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).
 #[utoipa::path(
     get,
     path = "/v1/transits/lunar",
@@ -1023,10 +1035,16 @@ pub async fn get_satellite_passes(
     let days = params.duration_days.unwrap_or(3).clamp(1, 14);
     let visible_only = params.visible_only.unwrap_or(false);
 
-    let time_bucket = start_time.timestamp() / 60;
     let cache_key = format!(
-        "passes:{}:{:.2}:{:.2}:{:.1}:{:.1}:{}:{}:{}",
-        id, params.lat, params.lon, alt, threshold, days, visible_only, time_bucket
+        "passes:{}:{}:{}:{}:{}:{}:{}:{}",
+        id,
+        params.lat,
+        params.lon,
+        alt,
+        threshold,
+        days,
+        visible_only,
+        start_time.timestamp_millis()
     );
 
     let res = repo
@@ -1088,10 +1106,13 @@ pub async fn get_relative_motion(
     let dur_mins = params.duration_minutes.unwrap_or(0);
     let step_secs = params.step_seconds.unwrap_or(60);
 
-    let time_bucket = epoch.timestamp() / 10;
     let cache_key = format!(
         "relmotion:{}:{}:{}:{}:{}",
-        id, params.target_id, dur_mins, step_secs, time_bucket
+        id,
+        params.target_id,
+        dur_mins,
+        step_secs,
+        epoch.timestamp_millis()
     );
 
     let res = repo
@@ -1144,8 +1165,7 @@ pub async fn get_satellite_state(
     let satellite = repo.get_satellite_by_id(id).await?;
     let epoch = params.epoch.unwrap_or_else(Utc::now);
 
-    let time_bucket = epoch.timestamp() / 10;
-    let cache_key = format!("state:{}:{}", id, time_bucket);
+    let cache_key = format!("state:{}:{}", id, epoch.timestamp_millis());
 
     let res = repo
         .cache
@@ -1167,7 +1187,7 @@ pub async fn get_satellite_state(
 
 /// Get Satellite Atmospheric Drag & Decay Risk
 ///
-/// Evaluates perigee/apogee altitude, B* atmospheric drag decay rate, remaining orbital lifetime, and uncontrolled re-entry risk score. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).
+/// Evaluates perigee/apogee altitude above the WGS-84 ellipsoid, the re-entry regime and a risk score from perigee altitude alone. No lifetime is estimated because a TLE carries no ballistic coefficient. Protected by JWT auth (requires 'viewer', 'editor', or 'admin' role).
 #[utoipa::path(
     get,
     path = "/v1/satellites/{id}/decay-risk",
@@ -1239,15 +1259,13 @@ pub async fn get_decay_watch(
     claims.require_role(UserRole::Viewer)?;
     let satellites = repo.list_satellites().await?;
     let max_perigee = params.max_perigee_km.unwrap_or(300.0);
-    let min_bstar = params.min_bstar.unwrap_or(0.0001);
     let limit = params.limit.unwrap_or(50).clamp(1, 500);
 
     let time_bucket = Utc::now().timestamp() / 60;
     let cache_key = format!(
-        "decay_watch:{}:{:.1}:{:.6}:{}:{}",
+        "decay_watch:{}:{}:{}:{}",
         satellites.len(),
         max_perigee,
-        min_bstar,
         limit,
         time_bucket
     );
@@ -1256,7 +1274,7 @@ pub async fn get_decay_watch(
         .cache
         .get_or_insert_with(&cache_key, || async move {
             let watch_res = tokio::task::spawn_blocking(move || {
-                astrodynamics::scan_decay_watch(&satellites, max_perigee, min_bstar, limit)
+                astrodynamics::scan_decay_watch(&satellites, max_perigee, limit)
             })
             .await
             .map_err(|e| e.to_string())?;
@@ -1291,13 +1309,27 @@ pub async fn calculate_collision_probability(
 ) -> Result<Json<CollisionProbabilityResponse>, AppError> {
     claims.require_role(UserRole::Viewer)?;
     let hbr = req.hard_body_radius_m.unwrap_or(10.0);
-    let sigma = req.combined_position_uncertainty_m.unwrap_or(50.0);
+    if !hbr.is_finite() || hbr <= 0.0 {
+        return Err(AppError::BadRequest(
+            "hardBodyRadiusM must be a positive finite number".to_string(),
+        ));
+    }
+    if !(req.sigma_1_m.is_finite() && req.sigma_2_m.is_finite())
+        || req.sigma_1_m <= 0.0
+        || req.sigma_2_m <= 0.0
+    {
+        return Err(AppError::BadRequest(
+            "sigma1M and sigma2M must be positive finite numbers".to_string(),
+        ));
+    }
 
     let res = astrodynamics::calculate_foster_collision_probability(
         req.miss_distance_km,
         req.relative_velocity_kms,
         hbr,
-        sigma,
+        req.sigma_1_m,
+        req.sigma_2_m,
+        req.miss_angle_deg.unwrap_or(0.0),
     );
 
     Ok(Json(res))

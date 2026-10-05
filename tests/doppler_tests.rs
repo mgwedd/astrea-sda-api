@@ -29,8 +29,16 @@ fn test_doppler_shift_calculation_approaching_and_receding() {
     let alt_km = 0.0;
     let epoch = Utc.with_ymd_and_hms(2024, 3, 20, 12, 0, 0).unwrap();
 
-    let res = astrodynamics::calculate_doppler_shift(&sat, center_freq_hz, lat, lon, alt_km, epoch)
-        .expect("Doppler calculation failed");
+    let res = astrodynamics::calculate_doppler_shift(
+        &sat,
+        center_freq_hz,
+        lat,
+        lon,
+        alt_km,
+        epoch,
+        false,
+    )
+    .expect("Doppler calculation failed");
 
     assert_eq!(res.satellite_id, sat.id);
     assert_eq!(res.satellite_name, "ISS (ZARYA)");
@@ -59,4 +67,22 @@ fn test_doppler_shift_calculation_approaching_and_receding() {
     } else {
         assert_eq!(res.signal_direction, "Stationary / Zero Doppler");
     }
+}
+
+// relativistic=true goes through the ECI-speed path: it must stay within the spec 8.2 bound of
+// the classical shift (difference ~ beta^2/2 + grav ~ 3e-10 relative) and differ from it.
+#[test]
+fn relativistic_doppler_end_to_end_is_close_to_classical_but_not_equal() {
+    let sat = sample_iss_satellite();
+    let f0 = 1.0e10;
+    let t = Utc.with_ymd_and_hms(2024, 3, 20, 12, 0, 0).unwrap();
+    let classic =
+        astrodynamics::calculate_doppler_shift(&sat, f0, 34.05, -118.24, 0.0, t, false).unwrap();
+    let rel =
+        astrodynamics::calculate_doppler_shift(&sat, f0, 34.05, -118.24, 0.0, t, true).unwrap();
+    assert_eq!(classic.range_rate_kms, rel.range_rate_kms);
+    let diff = (rel.corrected_freq_hz - classic.corrected_freq_hz).abs();
+    assert!(diff > 0.1, "relativistic correction missing: {diff} Hz");
+    // second-order terms: (rr/c)^2 + beta_s^2/2 + gravity, all < 1e-9 for LEO
+    assert!(diff < 1e-9 * f0 * 2.0, "{diff} Hz");
 }

@@ -80,6 +80,7 @@ dependencies = [
  "dashmap 5.5.3",
  "deadpool-redis",
  "jsonwebtoken",
+ "libm",
  "moka",
  "postgrest",
  "rand 0.8.8",

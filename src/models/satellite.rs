@@ -310,7 +310,6 @@ pub struct DecayWatchResponse {
     pub scanned_satellites_count: usize,
     pub decaying_satellites_found: usize,
     pub threshold_perigee_km: f64,
-    pub threshold_bstar: f64,
     pub objects: Vec<SatelliteDecayRiskResponse>,
 }
 
@@ -321,8 +320,13 @@ pub struct CollisionProbabilityRequest {
     pub relative_velocity_kms: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hard_body_radius_m: Option<f64>,
+    /// Principal-axis 1-sigma position uncertainty in the encounter plane (metres), major axis
+    pub sigma_1_m: f64,
+    /// Principal-axis 1-sigma position uncertainty in the encounter plane (metres), minor axis
+    pub sigma_2_m: f64,
+    /// Angle of the miss vector from the sigma_1 axis in degrees (default 0)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub combined_position_uncertainty_m: Option<f64>,
+    pub miss_angle_deg: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -331,7 +335,9 @@ pub struct CollisionProbabilityResponse {
     pub miss_distance_km: f64,
     pub relative_velocity_kms: f64,
     pub hard_body_radius_m: f64,
-    pub combined_uncertainty_m: f64,
+    pub sigma_1_m: f64,
+    pub sigma_2_m: f64,
+    pub miss_angle_deg: f64,
     pub collision_probability: f64,
     pub risk_category: String,
     pub recommendation: String,

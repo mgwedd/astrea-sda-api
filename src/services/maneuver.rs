@@ -3,23 +3,17 @@ use crate::models::{
     AnomalyDetectionResponse, AnomalyStatus, DetectedManeuver, ManeuverType, ManeuversResponse,
     OrbitalParameterResidual, Satellite, Tle,
 };
-use crate::services::astrodynamics::normalize_tle_line;
+use crate::services::astrodynamics::{brouwer_mean_semi_major_axis_km, normalize_tle_line};
 use chrono::{DateTime, Utc};
 use sgp4::Elements;
-
-const MU_KM3_S2: f64 = 398_600.441_8;
 
 /// Below this many residuals, median/MAD statistics are not meaningful and no verdict is given.
 pub const MIN_RESIDUALS_FOR_STATISTICS: usize = 5;
 
-/// Mean semi-major axis (km) from TLE mean motion (rev/day) by Kepler's third law.
-/// TLE mean motion is Kozai mean motion; its bias against Brouwer mean motion depends only
-/// on (a, e, i), so it is common to consecutive TLEs of one object and cancels to first
-/// order in differences.
-pub fn mean_semi_major_axis_km(mean_motion_rev_day: f64) -> f64 {
-    let n = mean_motion_rev_day * 2.0 * std::f64::consts::PI / 86_400.0;
-    (MU_KM3_S2 / (n * n)).cbrt()
-}
+/// Trailing window (samples) of consecutive da/dt used for the quiescent drift baseline.
+const BASELINE_WINDOW: usize = 5;
+/// Fewer prior da/dt samples than this gives a zero baseline.
+const MIN_BASELINE_SAMPLES: usize = 3;
 
 fn parse_tle(name: &str, tle: &Tle) -> Result<Elements, AppError> {
     let line1 = normalize_tle_line(&tle.line_one, '1');
@@ -34,8 +28,9 @@ fn epoch(e: &Elements) -> DateTime<Utc> {
 
 /// Mean elements of every TLE in `history`, oldest first (one per epoch). For each TLE after
 /// the first:
-/// - SMA residual = a(n_obs) - a(n_pred), with n_pred from the previous TLE's own mean-motion
-///   polynomial n0 + 2(ṅ/2)Δt + 3(n̈/6)Δt² (TLE fields hold ṅ/2 and n̈/6; Δt in days);
+/// - SMA residual = a''(obs) - a_pred, where a'' is the Brouwer mean semi-major axis and
+///   a_pred = a''_prev + median(trailing da/dt) * Δt (zero drift with < 3 prior samples).
+///   TLE ṅ and n̈ are fit artifacts and are not used;
 /// - inclination change = i_obs - i_prev.
 pub fn tle_residuals(
     name: &str,
@@ -48,17 +43,27 @@ pub fn tle_residuals(
     elements.sort_by_key(|e| e.datetime);
     elements.dedup_by_key(|e| e.datetime);
 
+    let mut rates: Vec<f64> = Vec::with_capacity(elements.len());
     let mut out: Vec<OrbitalParameterResidual> = Vec::with_capacity(elements.len());
     for (k, e) in elements.iter().enumerate() {
-        let a = mean_semi_major_axis_km(e.mean_motion);
+        let a = brouwer_mean_semi_major_axis_km(e);
         let (sma_residual, inc_change) = match k.checked_sub(1).map(|p| &elements[p]) {
             Some(prev) => {
                 let dt_days = (e.datetime - prev.datetime).num_milliseconds() as f64 / 86_400_000.0;
-                let n_pred = prev.mean_motion
-                    + 2.0 * prev.mean_motion_dot * dt_days
-                    + 3.0 * prev.mean_motion_ddot * dt_days * dt_days;
+                let a_prev = out[k - 1].mean_semi_major_axis_km;
+                let window = &rates[rates.len().saturating_sub(BASELINE_WINDOW)..];
+                let drift = if window.len() >= MIN_BASELINE_SAMPLES {
+                    let mut w = window.to_vec();
+                    w.sort_by(|x, y| x.total_cmp(y));
+                    median(&w)
+                } else {
+                    0.0
+                };
+                if dt_days > 0.0 {
+                    rates.push((a - a_prev) / dt_days);
+                }
                 (
-                    Some(a - mean_semi_major_axis_km(n_pred)),
+                    Some(a - (a_prev + drift * dt_days)),
                     Some(e.inclination - prev.inclination),
                 )
             }

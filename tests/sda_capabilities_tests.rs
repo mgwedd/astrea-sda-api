@@ -162,27 +162,58 @@ fn test_decay_risk_and_decay_watch() {
     assert!(debris_risk.reentry_risk_score > 80.0);
 
     let catalog = vec![iss, debris];
-    let watch: DecayWatchResponse = scan_decay_watch(&catalog, 300.0, 0.001, 10);
+    let watch: DecayWatchResponse = scan_decay_watch(&catalog, 300.0, 10);
     assert_eq!(watch.decaying_satellites_found, 1);
     assert_eq!(watch.objects[0].satellite_name, "DECAYING DEBRIS");
 }
 
 #[test]
 fn test_foster_collision_probability() {
-    // Direct head-on close miss: 50 meters miss distance, 50m uncertainty
+    // 50 m miss, isotropic 50 m sigma, 10 m HBR
     let res: CollisionProbabilityResponse =
-        calculate_foster_collision_probability(0.05, 14.5, 10.0, 50.0);
-
-    assert!(res.collision_probability > 0.0);
-    assert!(res.collision_probability < 1.0);
+        calculate_foster_collision_probability(0.05, 14.5, 10.0, 50.0, 50.0, 0.0);
     assert_eq!(res.hard_body_radius_m, 10.0);
-    assert_eq!(res.combined_uncertainty_m, 50.0);
+    assert_eq!((res.sigma_1_m, res.sigma_2_m), (50.0, 50.0));
     assert_eq!(res.risk_category, "Critical (Pc >= 1e-4)");
 
-    // Far miss: 10 km miss distance -> negligible collision probability
-    let far_res = calculate_foster_collision_probability(10.0, 10.0, 10.0, 50.0);
-    assert!(far_res.collision_probability < 1e-10);
-    assert_eq!(far_res.risk_category, "Negligible (Pc < 1e-7)");
+    // Far miss: 10 km -> negligible
+    let far = calculate_foster_collision_probability(10.0, 10.0, 10.0, 50.0, 50.0, 0.0);
+    assert!(far.collision_probability < 1e-10);
+    assert_eq!(far.risk_category, "Negligible (Pc < 1e-7)");
+}
+
+// Oracle: isotropic direct hit has the exact closed form 1 - exp(-R^2 / 2 sigma^2).
+#[test]
+fn foster_pc_isotropic_direct_hit_matches_closed_form() {
+    let r = calculate_foster_collision_probability(0.0, 7.0, 10.0, 50.0, 50.0, 0.0);
+    let exact = 1.0 - (-(10.0f64 * 10.0) / (2.0 * 50.0 * 50.0)).exp();
+    assert!((r.collision_probability - exact).abs() < 1e-9 * exact.max(1.0));
+}
+
+// Oracle: for R << sigma_min the constant-density Akella-Alfriend form (spec 10.5) holds.
+#[test]
+fn foster_pc_anisotropic_matches_constant_density_form() {
+    let (r, s1, s2) = (1.0f64, 500.0f64, 50.0f64);
+    let (d, alpha) = (80.0f64, 35.0f64.to_radians());
+    let (m1, m2) = (d * alpha.cos(), d * alpha.sin());
+    let expected =
+        r * r / (2.0 * s1 * s2) * (-0.5 * (m1 * m1 / (s1 * s1) + m2 * m2 / (s2 * s2))).exp();
+    let got = calculate_foster_collision_probability(d / 1000.0, 7.0, r, s1, s2, 35.0)
+        .collision_probability;
+    assert!(
+        ((got - expected) / expected).abs() < 5e-3,
+        "{got} vs {expected}"
+    );
+}
+
+// Circularizing the covariance must change the answer materially for anisotropic input.
+#[test]
+fn foster_pc_is_not_circularized() {
+    let aniso = calculate_foster_collision_probability(0.2, 7.0, 10.0, 500.0, 20.0, 90.0);
+    let sigma_iso = ((500.0f64 * 500.0 + 20.0 * 20.0) / 2.0).sqrt();
+    let iso = calculate_foster_collision_probability(0.2, 7.0, 10.0, sigma_iso, sigma_iso, 90.0);
+    let ratio = aniso.collision_probability / iso.collision_probability;
+    assert!(ratio > 2.0 || ratio < 0.5, "ratio {ratio}");
 }
 
 #[tokio::test]
@@ -350,7 +381,8 @@ async fn test_sda_api_endpoints_integration() {
         "missDistanceKm": 0.04,
         "relativeVelocityKms": 12.0,
         "hardBodyRadiusM": 15.0,
-        "combinedPositionUncertaintyM": 40.0
+        "sigma1M": 40.0,
+        "sigma2M": 40.0
     });
     let req = Request::builder()
         .method("POST")
@@ -367,4 +399,56 @@ async fn test_sda_api_endpoints_integration() {
     let pc_res: Value = serde_json::from_slice(&body).unwrap();
     assert!(pc_res["collisionProbability"].as_f64().unwrap() > 0.0);
     assert_eq!(pc_res["riskCategory"], "Critical (Pc >= 1e-4)");
+}
+
+/// Independent WGS-84 radius at geocentric latitude (literals, not crate helpers).
+fn wgs84_radius_km(phi_gc_rad: f64) -> f64 {
+    let (a, b) = (6378.137_f64, 6_356.752_314_245_f64);
+    let (s, c) = phi_gc_rad.sin_cos();
+    a * b / (b * b * c * c + a * a * s * s).sqrt()
+}
+
+// ISS: i = 51.64, w ~ 98.8 -> apsides near 50.8 deg geocentric latitude, ~10 km below R_E.
+#[test]
+fn state_apsis_altitudes_use_radius_at_apsis_latitude() {
+    let iss = mock_sat("ISS (ZARYA)", ISS_LINE1, ISS_LINE2);
+    let t = Utc.with_ymd_and_hms(2024, 3, 23, 21, 31, 0).unwrap();
+    let st = calculate_satellite_state(&iss, t).unwrap();
+    let k = &st.keplerian_elements;
+    let phi =
+        (k.inclination_deg.to_radians().sin() * k.arg_of_perigee_deg.to_radians().sin()).asin();
+    let r = wgs84_radius_km(phi);
+    assert!(6378.137 - r > 5.0, "test must discriminate from R_E: {r}");
+    let hp = k.semi_major_axis_km * (1.0 - k.eccentricity) - r;
+    let ha = k.semi_major_axis_km * (1.0 + k.eccentricity) - r;
+    // outputs are rounded to 0.01 km and inputs to ~1e-4, so allow 0.05 km
+    assert!(
+        (k.perigee_altitude_km - hp).abs() < 0.05,
+        "{} vs {hp}",
+        k.perigee_altitude_km
+    );
+    assert!(
+        (k.apogee_altitude_km - ha).abs() < 0.05,
+        "{} vs {ha}",
+        k.apogee_altitude_km
+    );
+}
+
+#[test]
+fn decay_risk_perigee_uses_radius_at_apsis_latitude() {
+    use astrea_sda_api::services::astrodynamics::{
+        brouwer_mean_semi_major_axis_km, normalize_tle_line,
+    };
+    use sgp4::Elements;
+    let iss = mock_sat("ISS (ZARYA)", ISS_LINE1, ISS_LINE2);
+    let l1 = normalize_tle_line(&iss.tle.line_one, '1');
+    let l2 = normalize_tle_line(&iss.tle.line_two, '2');
+    let el = Elements::from_tle(None, l1.as_bytes(), l2.as_bytes()).unwrap();
+    let a = brouwer_mean_semi_major_axis_km(&el);
+    let phi =
+        (el.inclination.to_radians().sin() * el.argument_of_perigee.to_radians().sin()).asin();
+    let r = wgs84_radius_km(phi);
+    let res = calculate_decay_risk(&iss).unwrap();
+    assert!((res.perigee_altitude_km - (a * (1.0 - el.eccentricity) - r)).abs() < 0.06);
+    assert!((res.apogee_altitude_km - (a * (1.0 + el.eccentricity) - r)).abs() < 0.06);
 }
