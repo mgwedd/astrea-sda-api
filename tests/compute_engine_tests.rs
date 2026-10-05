@@ -1,4 +1,7 @@
-use astrea_sda_api::{config::ServerConfig, services::compute::AstreaComputeEngine};
+use astrea_sda_api::{
+    config::{RoleQuota, ServerConfig},
+    services::compute::AstreaComputeEngine,
+};
 use axum::http::StatusCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -9,7 +12,8 @@ fn test_server_config_defaults_and_env_parsing() {
     // Default safe footprint when ENV vars are omitted (3 express, 1 heavy)
     assert_eq!(config.express_cores, 3);
     assert_eq!(config.heavy_cores, 1);
-    assert_eq!(config.user_quota, 5);
+    assert_eq!(config.compute_job_quota.for_role("viewer"), 5);
+    assert_eq!(config.compute_job_quota.for_role("admin"), 50);
 }
 
 #[test]
@@ -153,7 +157,7 @@ async fn user_quota_rejects_instead_of_queueing_and_evicts_idle_users() {
     // More express slots than the 5 held jobs, so the other callers reach the quota check.
     let engine = AstreaComputeEngine::new(&ServerConfig {
         express_cores: 10,
-        user_quota: 5,
+        compute_job_quota: RoleQuota::parse("default=5,admin=50"),
         ..ServerConfig::from_env()
     });
     let (started, stopped) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
@@ -209,11 +213,11 @@ async fn dropping_the_caller_cancels_a_running_job() {
 }
 
 #[tokio::test]
-async fn admin_quota_is_ten_times_the_user_quota() {
+async fn admin_quota_comes_from_its_own_role_entry() {
     // Enough express slots that only the per-user quota can reject.
     let engine = AstreaComputeEngine::new(&ServerConfig {
         express_cores: 60,
-        user_quota: 5,
+        compute_job_quota: RoleQuota::parse("default=5,admin=50"),
         ..ServerConfig::from_env()
     });
     let (started, stopped) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
@@ -243,7 +247,7 @@ async fn admin_quota_is_ten_times_the_user_quota() {
 #[tokio::test]
 async fn user_quota_follows_config() {
     let engine = AstreaComputeEngine::new(&ServerConfig {
-        user_quota: 1,
+        compute_job_quota: RoleQuota::parse("default=1"),
         ..ServerConfig::from_env()
     });
     let (started, stopped) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
@@ -258,4 +262,20 @@ async fn user_quota_follows_config() {
         .await;
     assert_eq!(over.err().as_deref(), Some("User quota exceeded"));
     h.abort();
+}
+
+#[test]
+fn role_quota_parses_and_falls_back() {
+    let q = RoleQuota::parse(" default=2, Editor=10 ,admin=50");
+    assert_eq!(q.for_role("viewer"), 2);
+    assert_eq!(q.for_role("unknown-role"), 2);
+    assert_eq!(q.for_role("editor"), 10);
+    assert_eq!(q.for_role("EDITOR"), 10);
+    assert_eq!(q.for_role("admin"), 50);
+
+    // Garbage, zero and negative entries are skipped; no `default` means 5.
+    let bad = RoleQuota::parse("admin=0,editor=x,viewer,=3,admin=-1,");
+    assert_eq!(bad.for_role("admin"), 5);
+    assert_eq!(bad.for_role("editor"), 5);
+    assert_eq!(bad, RoleQuota::parse(""));
 }

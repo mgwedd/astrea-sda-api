@@ -1,4 +1,4 @@
-use crate::config::{ServerConfig, ADMIN_QUOTA_MULTIPLIER};
+use crate::config::{RoleQuota, ServerConfig};
 use axum::http::StatusCode;
 use dashmap::DashMap;
 use deadpool_redis::{Config as DeadpoolConfig, Pool as RedisPool, Runtime};
@@ -40,7 +40,7 @@ pub struct AstreaComputeEngine {
     pub express_limit: Arc<Semaphore>,
     pub heavy_limit: Arc<Semaphore>,
     pub user_limits: Arc<DashMap<QuotaKey, Arc<Semaphore>>>,
-    pub user_quota: usize,
+    pub job_quota: RoleQuota,
     pub flight_tracker: MokaCache<u64, String>,
     pub redis_pool: Option<RedisPool>,
 }
@@ -99,7 +99,7 @@ impl AstreaComputeEngine {
             express_limit,
             heavy_limit,
             user_limits,
-            user_quota: config.user_quota,
+            job_quota: config.compute_job_quota.clone(),
             flight_tracker,
             redis_pool,
         }
@@ -137,11 +137,7 @@ impl AstreaComputeEngine {
     }
 
     fn acquire_user(&self, user_id: String, user_role: &str) -> Result<UserPermit, String> {
-        let quota = if user_role == "admin" {
-            self.user_quota * ADMIN_QUOTA_MULTIPLIER
-        } else {
-            self.user_quota
-        };
+        let quota = self.job_quota.for_role(user_role);
         let key = (user_id, quota);
         // `try_acquire` runs while the entry's shard lock is held; see `UserPermit::drop`.
         let permit = self
