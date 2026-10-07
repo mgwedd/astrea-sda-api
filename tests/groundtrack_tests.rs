@@ -9,6 +9,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use serde_json::{json, Value};
+use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -30,7 +31,15 @@ fn test_generate_ground_track_direct() {
     let start_time = chrono::DateTime::parse_from_rfc3339("2021-08-27T12:00:00Z")
         .unwrap()
         .with_timezone(&chrono::Utc);
-    let res = astrodynamics::generate_ground_track(&sat, start_time, 30, 60, true, true);
+    let res = astrodynamics::generate_ground_track(
+        &sat,
+        start_time,
+        30,
+        60,
+        true,
+        true,
+        &CancellationToken::new(),
+    );
     assert!(
         res.is_ok(),
         "Expected groundtrack generation to succeed: {:?}",

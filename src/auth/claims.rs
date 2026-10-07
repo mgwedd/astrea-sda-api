@@ -73,6 +73,17 @@ impl Claims {
         }
     }
 
+    /// Role normalised to the canonical name for its level (`superuser` -> `admin`, `reader` -> `viewer`...),
+    /// so per-role configuration matches the same aliases `role_level` accepts. Unknown roles pass through lowercased.
+    pub fn canonical_role(&self) -> String {
+        match self.role_level() {
+            3 => "admin".to_string(),
+            2 => "editor".to_string(),
+            1 => "viewer".to_string(),
+            _ => self.role.to_lowercase(),
+        }
+    }
+
     /// Checks whether caller has at least the minimum required role in the hierarchy.
     pub fn has_role(&self, minimum_role: UserRole) -> bool {
         let req_level = match minimum_role {

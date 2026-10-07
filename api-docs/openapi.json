@@ -1306,7 +1306,7 @@
           {
             "name": "format",
             "in": "query",
-            "description": "Output format ('geojson' or 'json', default: 'geojson')",
+            "description": "Output format: 'geojson' (default), 'json', 'czml' or 'all' (geojson + czml)",
             "required": false,
             "schema": {
               "type": "string",
@@ -1356,8 +1356,38 @@
               }
             }
           },
+          "429": {
+            "description": "Per-user concurrent compute quota exceeded (COMPUTE_JOB_QUOTA_BY_ROLE, default 5; admin 50); retry when a job finishes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal calculation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No compute slot freed within the queue wait; retry shortly",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Computation exceeded the 30 s limit",
             "content": {
               "application/json": {
                 "schema": {
@@ -1771,6 +1801,16 @@
               "format": "date-time",
               "nullable": true
             }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "description": "Output format: 'json' (default) or 'czml' (adds a `czml` document with one entity per pass)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
           }
         ],
         "responses": {
@@ -1796,6 +1836,36 @@
           },
           "404": {
             "description": "Satellite not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Per-user concurrent compute quota exceeded (COMPUTE_JOB_QUOTA_BY_ROLE, default 5; admin 50); retry when a job finishes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No compute slot freed within the queue wait; retry shortly",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Computation exceeded the 30 s limit",
             "content": {
               "application/json": {
                 "schema": {
@@ -3069,11 +3139,21 @@
           "footprintRadiusKm",
           "durationMinutes",
           "stepSeconds",
-          "trajectory"
+          "trajectory",
+          "droppedSamples"
         ],
         "properties": {
           "czml": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
             "nullable": true
+          },
+          "droppedSamples": {
+            "type": "integer",
+            "description": "Requested sample instants SGP4 could not produce (omitted from `trajectory`)",
+            "minimum": 0
           },
           "durationMinutes": {
             "type": "integer",
@@ -3570,6 +3650,20 @@
           "passes"
         ],
         "properties": {
+          "czml": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "CZML document with one entity per pass (only when `format=czml`)",
+            "nullable": true
+          },
+          "czmlDroppedSamples": {
+            "type": "integer",
+            "description": "Sample instants SGP4 could not produce for the CZML tracks (only when `format=czml`)",
+            "nullable": true,
+            "minimum": 0
+          },
           "elevationThresholdDeg": {
             "type": "number",
             "format": "double"

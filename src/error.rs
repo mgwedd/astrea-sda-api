@@ -36,6 +36,12 @@ pub enum AppError {
 
     #[error("Too Many Requests: {0}")]
     TooManyRequests(String),
+
+    #[error("Service unavailable: {0}")]
+    ServiceUnavailable(String),
+
+    #[error("Gateway timeout: {0}")]
+    GatewayTimeout(String),
 }
 
 impl IntoResponse for AppError {
@@ -50,6 +56,8 @@ impl IntoResponse for AppError {
             AppError::Unauthorized(ref msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
             AppError::Forbidden(ref msg) => (StatusCode::FORBIDDEN, msg.clone()),
             AppError::TooManyRequests(ref msg) => (StatusCode::TOO_MANY_REQUESTS, msg.clone()),
+            AppError::ServiceUnavailable(ref msg) => (StatusCode::SERVICE_UNAVAILABLE, msg.clone()),
+            AppError::GatewayTimeout(ref msg) => (StatusCode::GATEWAY_TIMEOUT, msg.clone()),
         };
 
         let body = Json(ErrorResponse {

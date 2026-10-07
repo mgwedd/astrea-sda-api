@@ -1,4 +1,5 @@
 use crate::cache::TieredCache;
+use crate::config::ServerConfig;
 use crate::error::AppError;
 use crate::models::{CreateSatelliteDto, Satellite, Tle, UpdateSatelliteDto};
 use crate::pagination::{
@@ -7,6 +8,7 @@ use crate::pagination::{
 use crate::repository::data_provider::{
     DataProvider, MemoryDataProvider, PostgresDataProvider, SupabaseDataProvider,
 };
+use crate::services::compute::AstreaComputeEngine;
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
@@ -15,6 +17,7 @@ use uuid::Uuid;
 pub struct SatelliteRepository {
     pub provider: Arc<dyn DataProvider>,
     pub cache: TieredCache,
+    pub compute: AstreaComputeEngine,
 }
 
 impl SatelliteRepository {
@@ -34,7 +37,19 @@ impl SatelliteRepository {
             Self::connect_postgres().await
         };
 
-        Self { provider, cache }
+        Self {
+            provider,
+            cache,
+            compute: Self::compute_engine(),
+        }
+    }
+
+    /// The engine's own Redis pool is only used by `execute_compute`; views cache via `TieredCache`.
+    fn compute_engine() -> AstreaComputeEngine {
+        AstreaComputeEngine::new(&ServerConfig {
+            redis_url: None,
+            ..ServerConfig::from_env()
+        })
     }
 
     async fn connect_postgres() -> Arc<dyn DataProvider> {
@@ -53,7 +68,11 @@ impl SatelliteRepository {
     }
 
     pub fn with_provider(provider: Arc<dyn DataProvider>, cache: TieredCache) -> Self {
-        Self { provider, cache }
+        Self {
+            provider,
+            cache,
+            compute: Self::compute_engine(),
+        }
     }
 
     pub async fn create_satellite(&self, dto: CreateSatelliteDto) -> Result<Satellite, AppError> {

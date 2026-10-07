@@ -12,8 +12,15 @@ use crate::models::{
 };
 use crate::pagination::{PaginatedResponse, PaginationQuery};
 use crate::repository::SatelliteRepository;
+use crate::services::compute::error_status;
+use crate::services::ephemeris::Ephemeris;
 use crate::services::pipeline::{CelesTrakGroup, DiscoveryPipeline};
-use crate::services::{astrodynamics, maneuver};
+use crate::services::{astrodynamics, czml, maneuver};
+
+/// Engine cost estimates, measured on one ISS TLE in a release build (docs/CZML_VIEWER_LOG.md R19):
+/// 0.44 µs/sample and ~1.6 ms/day of pass search, each rounded up ~2x.
+const SAMPLE_COST_MS: f64 = 0.001;
+const PASS_DAY_COST_MS: u64 = 2;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -64,6 +71,8 @@ pub struct PassScheduleQueryParams {
     pub visible_only: Option<bool>,
     /// UTC timestamp to start pass schedule forecast from (defaults to current time if omitted)
     pub start_time: Option<DateTime<Utc>>,
+    /// Output format: 'json' (default) or 'czml' (adds a `czml` document with one entity per pass)
+    pub format: Option<String>,
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -98,7 +107,7 @@ pub struct GroundTrackQueryParams {
     pub duration_minutes: Option<usize>,
     /// Step sampling interval in seconds (default: 30 secs, max: 300)
     pub step_seconds: Option<usize>,
-    /// Output format ('geojson' or 'json', default: 'geojson')
+    /// Output format: 'geojson' (default), 'json', 'czml' or 'all' (geojson + czml)
     pub format: Option<String>,
     /// UTC timestamp to start projection from (defaults to current time if omitted)
     pub start_time: Option<DateTime<Utc>>,
@@ -160,7 +169,12 @@ fn map_calculation_error(e: String) -> AppError {
     {
         AppError::Sgp4Error(e)
     } else {
-        AppError::InternalServerError(e)
+        match error_status(&e) {
+            StatusCode::TOO_MANY_REQUESTS => AppError::TooManyRequests(e),
+            StatusCode::SERVICE_UNAVAILABLE => AppError::ServiceUnavailable(e),
+            StatusCode::GATEWAY_TIMEOUT => AppError::GatewayTimeout(e),
+            _ => AppError::InternalServerError(e),
+        }
     }
 }
 
@@ -548,6 +562,9 @@ pub async fn get_next_visible(
         (status = 200, description = "3D Ground Track and GeoJSON trajectory", body = GroundTrackResponse),
         (status = 401, description = "Unauthorized - Missing or invalid JWT token", body = ErrorResponse),
         (status = 404, description = "Satellite not found", body = ErrorResponse),
+        (status = 429, description = "Per-user concurrent compute quota exceeded (COMPUTE_JOB_QUOTA_BY_ROLE, default 5; admin 50); retry when a job finishes", body = ErrorResponse),
+        (status = 503, description = "No compute slot freed within the queue wait; retry shortly", body = ErrorResponse),
+        (status = 504, description = "Computation exceeded the 30 s limit", body = ErrorResponse),
         (status = 500, description = "Internal calculation error", body = ErrorResponse)
     ),
     security(("bearer_auth" = [])),
@@ -571,6 +588,12 @@ pub async fn get_ground_track(
         _ => (true, false),
     };
 
+    // Reject before the engine: errors raised inside it surface as 500s.
+    let samples = Ephemeris::check_range(duration_minutes * 60, step_seconds)?;
+    if include_czml {
+        czml::check_step(step_seconds)?;
+    }
+
     let cache_key = format!(
         "groundtrack:{}:{}:{}:{}:{}:{}:{}",
         id,
@@ -582,22 +605,29 @@ pub async fn get_ground_track(
         satellite.last_modified_date.timestamp()
     );
 
+    let engine = repo.compute.clone();
+    let (user_id, role) = (claims.sub.clone(), claims.canonical_role());
     let res = repo
         .cache
         .get_or_insert_with(&cache_key, || async move {
-            let sat_clone = satellite.clone();
-            let track_res = tokio::task::spawn_blocking(move || {
-                astrodynamics::generate_ground_track(
-                    &sat_clone,
-                    start_time,
-                    duration_minutes,
-                    step_seconds,
-                    include_geojson,
-                    include_czml,
+            let track_res = engine
+                .run(
+                    ((samples as f64 * SAMPLE_COST_MS).ceil() as u64).max(1),
+                    user_id,
+                    role,
+                    move |cancel| {
+                        astrodynamics::generate_ground_track(
+                            &satellite,
+                            start_time,
+                            duration_minutes,
+                            step_seconds,
+                            include_geojson,
+                            include_czml,
+                            &cancel,
+                        )
+                    },
                 )
-            })
-            .await
-            .map_err(|e| e.to_string())?;
+                .await?;
 
             track_res.map_err(|e| e.to_string())
         })
@@ -1017,7 +1047,10 @@ pub async fn get_lunar_transits(
     responses(
         (status = 200, description = "Satellite pass schedule computed successfully", body = PassScheduleResponse),
         (status = 401, description = "Unauthorized - Missing or invalid JWT token", body = ErrorResponse),
-        (status = 404, description = "Satellite not found", body = ErrorResponse)
+        (status = 404, description = "Satellite not found", body = ErrorResponse),
+        (status = 429, description = "Per-user concurrent compute quota exceeded (COMPUTE_JOB_QUOTA_BY_ROLE, default 5; admin 50); retry when a job finishes", body = ErrorResponse),
+        (status = 503, description = "No compute slot freed within the queue wait; retry shortly", body = ErrorResponse),
+        (status = 504, description = "Computation exceeded the 30 s limit", body = ErrorResponse)
     ),
     security(("bearer_auth" = [])),
     tag = "Satellites"
@@ -1035,9 +1068,13 @@ pub async fn get_satellite_passes(
     let threshold = params.threshold_deg.unwrap_or(5.0);
     let days = params.duration_days.unwrap_or(3).clamp(1, 14);
     let visible_only = params.visible_only.unwrap_or(false);
+    let include_czml = params
+        .format
+        .as_deref()
+        .is_some_and(|f| f.eq_ignore_ascii_case("czml"));
 
     let cache_key = format!(
-        "passes:{}:{}:{}:{}:{}:{}:{}:{}",
+        "passes:{}:{}:{}:{}:{}:{}:{}:{}:{}",
         id,
         params.lat,
         params.lon,
@@ -1045,27 +1082,42 @@ pub async fn get_satellite_passes(
         threshold,
         days,
         visible_only,
+        include_czml,
         start_time.timestamp_millis()
     );
 
+    let engine = repo.compute.clone();
+    let (user_id, role) = (claims.sub.clone(), claims.canonical_role());
     let res = repo
         .cache
         .get_or_insert_with(&cache_key, || async move {
-            let sat_clone = satellite.clone();
-            let pass_res = tokio::task::spawn_blocking(move || {
-                astrodynamics::find_pass_schedule(
-                    &sat_clone,
-                    params.lat,
-                    params.lon,
-                    alt,
-                    start_time,
-                    threshold,
-                    days,
-                    visible_only,
+            let pass_res = engine
+                .run(
+                    PASS_DAY_COST_MS * days as u64,
+                    user_id,
+                    role,
+                    move |cancel| {
+                        let mut res = astrodynamics::find_pass_schedule(
+                            &satellite,
+                            params.lat,
+                            params.lon,
+                            alt,
+                            start_time,
+                            threshold,
+                            days,
+                            visible_only,
+                            &cancel,
+                        )?;
+                        if include_czml {
+                            let (doc, dropped) =
+                                czml::passes_document(&satellite, &res.passes, &cancel)?;
+                            res.czml = Some(doc);
+                            res.czml_dropped_samples = Some(dropped);
+                        }
+                        Ok::<_, AppError>(res)
+                    },
                 )
-            })
-            .await
-            .map_err(|e| e.to_string())?;
+                .await?;
 
             pass_res.map_err(|e| e.to_string())
         })

@@ -3,16 +3,19 @@ use crate::models::{
     CartesianState, ClassicalKeplerianElements, CollisionProbabilityResponse, ConjunctionMatch,
     ConjunctionSearchResponse, CoordinateFrame, DecayWatchResponse, DopplerResponse,
     ElementTransformRequest, ElementTransformResponse, FrameTransformRequest,
-    FrameTransformResponse, GeoJsonFeature, GeoJsonGeometry, GeodeticCoordinates, GroundTrackPoint,
+    FrameTransformResponse, GeoJsonFeature, GeoJsonGeometry, GeodeticCoordinates,
     GroundTrackResponse, IlluminationResponse, KeplerianElements, LightingState, LookAnglesDetail,
     ModifiedEquinoctialElements, NextVisiblePassResponse, ObserverTwilightState, OverheadResponse,
     PassScheduleResponse, RelativeMotionPoint, RelativeMotionResponse, Satellite,
     SatelliteDecayRiskResponse, SatellitePass, SatelliteStateResponse, SatelliteSummary,
     TransitMatch, TransitPredictionResponse, TransitTarget,
 };
+use crate::services::czml;
+use crate::services::ephemeris::{Ephemeris, Samples};
 use chrono::{DateTime, Utc};
 use rayon::prelude::*;
 use sgp4::{Constants, Elements, Prediction};
+use tokio_util::sync::CancellationToken;
 
 pub struct LookAngles {
     pub azimuth: f64,
@@ -521,59 +524,6 @@ pub fn build_anti_meridian_geojson_geometry(points: &[[f64; 3]]) -> GeoJsonGeome
     }
 }
 
-/// Generates a valid CZML Document for Cesium.js 3D globe animation
-pub fn generate_czml_document(
-    satellite: &Satellite,
-    trajectory: &[GroundTrackPoint],
-) -> serde_json::Value {
-    if trajectory.is_empty() {
-        return serde_json::json!([]);
-    }
-
-    let start_iso = trajectory[0].timestamp.to_rfc3339();
-    let end_iso = trajectory[trajectory.len() - 1].timestamp.to_rfc3339();
-    let availability = format!("{}/{}", start_iso, end_iso);
-
-    let mut cartesian_coords = Vec::with_capacity(trajectory.len() * 4);
-    for pt in trajectory {
-        let time_offset =
-            (pt.timestamp - trajectory[0].timestamp).num_milliseconds() as f64 / 1000.0;
-        cartesian_coords.push(serde_json::json!(time_offset));
-        cartesian_coords.push(serde_json::json!(pt.position_ecf_km[0] * 1000.0));
-        cartesian_coords.push(serde_json::json!(pt.position_ecf_km[1] * 1000.0));
-        cartesian_coords.push(serde_json::json!(pt.position_ecf_km[2] * 1000.0));
-    }
-
-    serde_json::json!([
-        {
-            "id": "document",
-            "name": format!("Trajectory for {}", satellite.name),
-            "version": "1.0"
-        },
-        {
-            "id": satellite.id.to_string(),
-            "name": satellite.name,
-            "availability": availability,
-            "position": {
-                "epoch": start_iso,
-                "cartesian": cartesian_coords
-            },
-            "path": {
-                "show": true,
-                "width": 2,
-                "resolution": 120,
-                "material": {
-                    "solidColor": {
-                        "color": {
-                            "rgba": [0, 255, 255, 255]
-                        }
-                    }
-                }
-            }
-        }
-    ])
-}
-
 /// Generates a full orbital 3D ground track trajectory, GeoJSON Anti-Meridian line, Footprint Polygon, and CZML
 pub fn generate_ground_track(
     satellite: &Satellite,
@@ -582,59 +532,31 @@ pub fn generate_ground_track(
     step_seconds: usize,
     include_geojson: bool,
     include_czml: bool,
+    cancel: &CancellationToken,
 ) -> Result<GroundTrackResponse, AppError> {
-    let line1 = normalize_tle_line(&satellite.tle.line_one, '1');
-    let line2 = normalize_tle_line(&satellite.tle.line_two, '2');
-
-    let elements = Elements::from_tle(
-        Some(satellite.name.clone()),
-        line1.as_bytes(),
-        line2.as_bytes(),
-    )
-    .map_err(|e| AppError::Sgp4Error(format!("Failed to parse TLE: {:?}", e)))?;
-
-    let constants = Constants::from_elements(&elements)
-        .map_err(|e| AppError::Sgp4Error(format!("Constants error: {:?}", e)))?;
-
-    let epoch_dt = DateTime::<Utc>::from_naive_utc_and_offset(elements.datetime, Utc);
-    let mean_motion_revs_day = elements.mean_motion;
+    let eph = Ephemeris::from_satellite(satellite)?;
+    let mean_motion_revs_day = eph.mean_motion_revs_day;
     let orbital_period_minutes = if mean_motion_revs_day > 0.0 {
         1440.0 / mean_motion_revs_day
     } else {
         90.0
     };
 
-    let duration_mins = duration_minutes.clamp(1, 1440);
-    let step_secs = step_seconds.clamp(1, 300);
-    let total_steps = (duration_mins * 60) / step_secs;
-    let mut trajectory = Vec::with_capacity(total_steps + 1);
-    let mut geojson_coords = Vec::with_capacity(if include_geojson { total_steps + 1 } else { 0 });
-
-    for i in 0..=total_steps {
-        let offset_secs = (i * step_secs) as i64;
-        let current_time = start_time + chrono::Duration::seconds(offset_secs);
-        let minutes_since_epoch = (current_time - epoch_dt).num_milliseconds() as f64 / 60000.0;
-
-        if let Ok(prediction) = constants.propagate(minutes_since_epoch) {
-            let lst = calculate_local_sidereal_time(current_time, 0.0);
-            let pos_ecf = eci_to_ecf(prediction.position, lst);
-            let vel_ecf = eci_to_ecf_velocity(prediction.position, prediction.velocity, lst);
-            let (lat, lon, alt_km) = ecf_to_geodetic(pos_ecf);
-
-            trajectory.push(GroundTrackPoint {
-                timestamp: current_time,
-                lat,
-                lon,
-                alt_km,
-                position_ecf_km: pos_ecf,
-                velocity_ecf_kms: vel_ecf,
-            });
-
-            if include_geojson {
-                geojson_coords.push([lon, lat, alt_km]);
-            }
-        }
+    if include_czml {
+        czml::check_step(step_seconds)?;
     }
+    let Samples {
+        points: trajectory,
+        dropped: dropped_samples,
+    } = eph.range(start_time, duration_minutes * 60, step_seconds, cancel)?;
+    let geojson_coords: Vec<[f64; 3]> = if include_geojson {
+        trajectory
+            .iter()
+            .map(|p| [p.lon, p.lat, p.alt_km])
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     // Footprint is instantaneous: evaluated at the first trajectory point.
     let footprint_radius_km = trajectory
@@ -684,7 +606,11 @@ pub fn generate_ground_track(
     };
 
     let czml = if include_czml {
-        Some(generate_czml_document(satellite, &trajectory))
+        Some(czml::trajectory_document(
+            satellite.id,
+            &satellite.name,
+            &trajectory,
+        ))
     } else {
         None
     };
@@ -694,9 +620,10 @@ pub fn generate_ground_track(
         satellite_name: satellite.name.clone(),
         orbital_period_minutes,
         footprint_radius_km,
-        duration_minutes: duration_mins,
-        step_seconds: step_secs,
+        duration_minutes,
+        step_seconds,
         trajectory,
+        dropped_samples,
         geojson,
         footprint_polygon,
         czml,
@@ -1401,6 +1328,7 @@ pub fn find_pass_schedule(
     elevation_threshold_deg: f64,
     duration_days: usize,
     visible_only: bool,
+    cancel: &CancellationToken,
 ) -> Result<PassScheduleResponse, AppError> {
     let days = duration_days.clamp(1, 14);
     let total_minutes = (days * 24 * 60) as i64;
@@ -1417,6 +1345,9 @@ pub fn find_pass_schedule(
     let mut k: i64 = 0;
 
     while k < total_minutes {
+        if cancel.is_cancelled() {
+            return Err(crate::services::ephemeris::cancelled());
+        }
         let t_curr = start_time + chrono::Duration::minutes(k);
         let e_curr = elev(t_curr);
 
@@ -1555,6 +1486,8 @@ pub fn find_pass_schedule(
         forecast_days: days,
         passes_found: passes.len(),
         passes,
+        czml: None,
+        czml_dropped_samples: None,
     })
 }
 
