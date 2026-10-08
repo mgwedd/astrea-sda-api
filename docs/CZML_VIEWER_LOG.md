@@ -47,10 +47,10 @@ Severity: H = could produce wrong science or a security hole; M = rework or user
 
 ## Open questions
 
-- Q1. What is the threat model behind "defense grade"? Candidates: untrusted network, shared workstation, malicious tile host, compromised dependency, insider. Each changes controls (e.g. mTLS-bound tokens exist server-side already, `cnf.x5t#S256`). Until answered, viewer auth is a reasonable baseline, not a validated one.
+- Q1. **ANSWERED 2026-10-08: internal ops** (trusted network, authenticated users). Original: What is the threat model behind "defense grade"? Candidates: untrusted network, shared workstation, malicious tile host, compromised dependency, insider. Each changes controls (e.g. mTLS-bound tokens exist server-side already, `cnf.x5t#S256`). Until answered, viewer auth is a reasonable baseline, not a validated one.
 - Q2. Which CSP relaxations does Cesium actually require? (Experiment, R10.)
 - Q3. (CZML spec is silent; needs Cesium source/docs or an experiment.) How does Cesium treat FIXED samples relative to its own Earth orientation, and what is the on-screen offset vs our GMST-only values? Needed before any claim about frames; also gates INERTIAL trails.
-- Q4. Embed Cesium in the binary, or ship it in the image and serve from disk? (R14.)
+- Q4. **ANSWERED 2026-10-08: ship in the image**, served from `VIEWER_ASSETS_DIR`. Original: Embed Cesium in the binary, or ship it in the image and serve from disk? (R14.)
 - Q5. Do `primary_id`/`secondary_id` on conjunction search run a pairwise computation, or filter the catalog search results? Pairwise is far cheaper; is there such a function? UNVERIFIED.
 - Q6. What TLE-age threshold warns or rejects? Needs a number backed by SGP4 error data.
 - Q7. Adaptive step sizing: worth it in v1, or fixed step + Lagrange first? Decide from R1 measurements.
@@ -112,3 +112,13 @@ Format: `YYYY-MM-DD — item — what was run — result — status change`.
   - **Lagrange degree clamped to the sample count** (`min(5, n-1)`; a single sample omits interpolation). Removes the UNVERIFIED "Cesium with <6 samples" question by never asking for it. MEASURED by unit test. Cesium's actual behaviour for degree > n-1 remains unknown, now irrelevant.
   - **Passes CZML reports drops**: `czmlDroppedSamples` (only with `format=czml`). MEASURED in the HTTP test (0 for the ISS fixture); the nonzero path has no test (needs a TLE that fails mid-window).
   Not fixable inside this PR (reasons in #75): Cesium FIXED-frame offset (R2/Q3, needs Cesium running = phase 2), TLE age (R3, a new response field; goes with scene metadata in phase 3), time scales (R16, same experiment as R2), `NEG_INFINITY` swallowing in pass search (pre-existing, also feeds `/next-visible`).
+
+## Phase 2 (viewer shell, branch `feat/viewer-shell`)
+
+- 2026-10-08 — Q1/Q4 — user chose internal-ops threat model and Cesium shipped in the image — decisions recorded; R11 stays as written (in-memory JWT is not XSS-proof).
+- 2026-10-08 — R14 — `scripts/fetch-cesium.sh` (`npm pack cesium@1.146.0`, copy `Build/Cesium`) — MEASURED 22 MB on disk, contains `Cesium.js`, `Widgets/widgets.css`, `Workers`, `Assets/Textures/NaturalEarthII` — R14 resolved for the image route; binary size unchanged.
+- 2026-10-08 — R10/Q2 — headless Chrome (CDP, swiftshader) against the running server, token pasted, ISS ground track loaded — MEASURED with `script-src 'self'` only: `Cesium.js` throws `EvalError` at load (Knockout 3.5.1 `(0,eval)("this")`, `Cesium.js:18263`) so the whole bundle fails; WebAssembly instantiation is blocked too. Added `'unsafe-eval' 'wasm-unsafe-eval'` -> globe renders. With `style-src 'self'` Cesium's inline `<style>`/style attributes are blocked -> `'unsafe-inline'` needed. Worker `importScripts` from `blob:` blocked -> `blob:` needed in `script-src`. Final CSP: console clean (only a favicon 404, since fixed), `/v1/satellites` returned 1 satellite, groundtrack `format=czml` returned 200, canvas present. UNVERIFIED: that the `CzmlDataSource` actually drew the track (no pixel/entity check; the closure keeps the viewer private); which Cesium feature needs the blob worker. Q2 answered; R10 downgraded from unknown to a known residual.
+- 2026-10-08 — R11 — MEASURED after sign-in: `localStorage` has only Cesium's own `cesium-hasSeenNavHelp`; `sessionStorage` empty; `document.cookie` empty; URL unchanged (no token). `tests/viewer_tests.rs` also greps `app.js` for storage/cookie/URL APIs (a regression check, not a proof).
+- 2026-10-08 — **R23 (new, M)** — CSP allows `'unsafe-eval'`, which weakens the XSS defence R11 relies on. Script injection is still blocked (no inline, no third-party), but an injected string can reach `eval`. Fix needs an engine-only Cesium build with no Knockout (needs a bundler, against "no build step"). Revisit if the threat model moves beyond internal ops (Q1).
+- 2026-10-08 — still open from phase 2 scope: R2/Q3 (FIXED-frame offset vs Cesium Earth orientation) and R16 (time scales) need a numeric comparison inside Cesium, not done in this step; ground-truth frame accuracy remains as stated in §12.7.
+- 2026-10-08 — `/v1/auth/signup` accepts a self-chosen `role` (`editor` was granted to an unauthenticated signup on the in-memory provider while seeding the test). Preexisting, outside viewer scope; for #75.

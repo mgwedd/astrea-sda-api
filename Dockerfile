@@ -34,6 +34,13 @@ RUN cargo test --release --offline --locked || cargo test --release --locked
 RUN cargo build --release --locked
 
 # ==============================================================================
+# Stage 1b: CesiumJS bundle for /viewer (pinned in scripts/fetch-cesium.sh)
+FROM node:22-alpine AS cesium
+WORKDIR /work
+COPY scripts/fetch-cesium.sh ./
+RUN ./fetch-cesium.sh /cesium
+
+# ==============================================================================
 # Stage 2: Minimal Production Runtime Container
 FROM alpine:3.20 AS runner
 
@@ -46,6 +53,9 @@ RUN apk add --no-cache ca-certificates tzdata curl && \
 # Copy compiled production binary from builder
 COPY --from=builder /usr/src/astrea-sda-api/target/release/astrea-sda-api /app/astrea-sda-api
 
+# Static CesiumJS assets served by the binary at /viewer/cesium (no reverse proxy in the image)
+COPY --from=cesium /cesium /app/viewer/cesium
+
 # Set ownership to unprivileged runner user
 RUN chown -R astrea:astrea /app
 
@@ -54,6 +64,7 @@ USER astrea
 # Production runtime defaults (override via environment variables or docker-compose)
 ENV HOST=0.0.0.0
 ENV PORT=8080
+ENV VIEWER_ASSETS_DIR=/app/viewer/cesium
 EXPOSE 8080
 
 HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
