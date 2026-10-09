@@ -176,6 +176,7 @@ Customize runtime behavior via `.env` or container environment variables:
 | `MAX_EXPRESS_CORES` | `4` | Rayon thread pool cap for express compute jobs (<5s). |
 | `MAX_HEAVY_CORES` | `8` | Rayon thread pool cap for heavy conjunction scans. |
 | `COMPUTE_JOB_QUOTA_BY_ROLE` | `default=5,admin=50` | Concurrent compute jobs one user may have in flight, as `role=limit` pairs (`default` covers unlisted roles). Over-quota requests get HTTP 429. |
+| `VIEWER_ASSETS_DIR` | _unset_ | Directory holding the CesiumJS bundle served at `/viewer/cesium`. Unset: `/viewer` loads but reports Cesium missing. See [docs/VIEWER.md](docs/VIEWER.md). |
 | `RATE_LIMIT_ALGORITHM` | `sliding_window` | Rate limiter algorithm (`sliding_window`, `token_bucket`, `noop`). |
 | `RSA_PRIVATE_KEY_FILE` | `.keys/rsa_private.pem` | Path to RSA private key for RS256 token signing. |
 | `RSA_PUBLIC_KEY_FILE` | `.keys/rsa_public.pem` | Path to RSA public key for RS256 token verification. |
