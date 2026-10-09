@@ -37,6 +37,7 @@ RUN cargo build --release --locked
 # Stage 1b: CesiumJS bundle for /viewer (pinned in scripts/fetch-cesium.sh)
 FROM node:22-alpine AS cesium
 WORKDIR /work
+RUN apk add --no-cache tar
 COPY scripts/fetch-cesium.sh ./
 RUN ./fetch-cesium.sh /cesium
 
