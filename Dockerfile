@@ -23,6 +23,7 @@ RUN mkdir -p src && \
 COPY src ./src
 COPY tests ./tests
 COPY migrations ./migrations
+COPY viewer ./viewer
 
 # Touch main.rs and lib.rs to force recompilation of app source
 RUN touch src/lib.rs src/main.rs
