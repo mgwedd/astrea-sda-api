@@ -1,0 +1,7 @@
+html,body{margin:0;height:100%;font-family:system-ui,sans-serif;background:#0b0e14;color:#e6e6e6}
+#login{max-width:22rem;margin:10vh auto;display:grid;gap:.75rem}
+#login label{display:grid;gap:.25rem}
+#app{display:grid;grid-template-rows:auto 1fr;height:100%}
+header{display:flex;gap:.75rem;align-items:center;padding:.5rem;flex-wrap:wrap}
+#globe{min-height:0}
+#login-error{color:#ff6b6b;min-height:1.2em}

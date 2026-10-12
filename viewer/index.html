@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Astrea SDA Viewer</title>
+<link rel="stylesheet" href="/viewer/cesium/Widgets/widgets.css">
+<link rel="stylesheet" href="/viewer/app.css">
+</head>
+<body>
+<form id="login" hidden>
+  <h1>Astrea SDA Viewer</h1>
+  <label>Email <input name="email" type="email" autocomplete="username"></label>
+  <label>Password <input name="password" type="password" autocomplete="current-password"></label>
+  <button type="submit">Sign in</button>
+  <details><summary>Use an existing token</summary>
+    <label>Bearer token <input name="token" type="password" autocomplete="off"></label>
+    <button type="button" id="use-token">Use token</button>
+  </details>
+  <p id="login-error" role="alert"></p>
+</form>
+<div id="app" hidden>
+  <header>
+    <select id="sat" aria-label="Satellite"></select>
+    <label>Minutes <input id="minutes" type="number" min="1" max="1440" value="90"></label>
+    <button id="load">Ground track</button>
+    <span id="status" role="status"></span>
+    <button id="logout">Sign out</button>
+  </header>
+  <div id="globe"></div>
+</div>
+<p id="no-cesium" hidden>Cesium assets not found. Set <code>VIEWER_ASSETS_DIR</code> (see docs/VIEWER.md).</p>
+<script src="/viewer/cesium/Cesium.js"></script>
+<script src="/viewer/app.js"></script>
+</body>
+</html>

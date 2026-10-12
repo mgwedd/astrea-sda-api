@@ -7,6 +7,7 @@ pub mod models;
 pub mod pagination;
 pub mod repository;
 pub mod services;
+pub mod viewer;
 
 use axum::{
     response::{Html, Redirect},
@@ -268,6 +269,11 @@ pub fn create_router_with_auth_and_limiter(
         .route("/", get(|| async { Redirect::temporary("/swagger-ui/") }))
         .route("/docs", get(|| async { Html(REDOC_HTML) }))
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
+        .merge(viewer::router(
+            std::env::var("VIEWER_ASSETS_DIR")
+                .ok()
+                .map(std::path::PathBuf::from),
+        ))
         .nest("/v1", api_routes.clone())
         .nest("/api/v1", api_routes)
         .layer(CorsLayer::permissive())
