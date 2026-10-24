@@ -132,3 +132,19 @@ Format: `YYYY-MM-DD — item — what was run — result — status change`.
   - Supports both structured `SceneResponse` and raw CZML array via `?format=czml` (`Content-Type: application/vnd.cesium+json`).
   - `/viewer` enhanced with scene composition action and click-to-query entity inspector (`requestInspector`) displaying live telemetry without breaking zero-persistence auth security rules.
   - Verified with 5/5 tests in `tests/scene_tests.rs`.
+
+## Phase 4 (advanced primitives & SDA layers, branch `feat/czml-advanced-primitives-and-layers`)
+
+- 2026-10-24 — Phase 4 architecture: Advanced view primitives and SDA layers for Conjunction, Illumination, and Relative Motion (completing Phase 4 of #65).
+  - **Packet Primitives**: Added pure stateless CZML graphic builders in `src/services/czml/packet.rs`:
+    - `fixed_position`: ECEF Cartesian km to metres static coordinate packet.
+    - `point`: Screen-space point billboard with fill and border.
+    - `label`: Screen-space label with outline and vertical offset.
+    - `polyline`: 3D Cartesian line primitive connecting positions.
+    - `ellipsoid`: 3D volume primitive with semi-axes $[a, b, c]$ for collision keep-out / uncertainty spheres.
+    - `cylinder`: 3D truncated cone / cylinder primitive for sensor visibility cones.
+  - **Conjunction Layer (`conjunction`)**: Pairwise screening at Time of Closest Approach (TCA). Emits marker (`point` + `label`) at primary TCA position, miss distance link (`polyline`) between primary and secondary, and keep-out volume (`ellipsoid`) centered at primary satellite with radius $R = \max(d_{min}, 1.0)\text{ km}$.
+  - **Illumination Layer (`illumination`)**: Trajectory sampled and color-coded into continuous interval segments by solar lighting regime (Full Sunlight: Gold/Yellow, Penumbra: Orange, Umbra: Shadow Indigo), maintaining continuity and degree-5 Lagrange interpolation.
+  - **Relative Motion Layer (`relativeMotion`)**: Evaluates Hill/LVLH (RTN) relative motion. Emits target satellite trajectory, relative range link vector at epoch $t_0$, and RTN state readout marker detailing Range, Radial, In-Track, and Cross-Track coordinates.
+  - **Compute Routing**: Added complexity estimation in `create_scene` for all new layers using `AstreaComputeEngine::estimate_complexity` for conjunctions and scaled sample budgets for relative motion and illumination.
+  - **Contract & Tests**: Verified 8/8 tests in `tests/scene_tests.rs`, synced `api-docs/openapi.json`, and documented in Section 13.5 of `ASTRODYNAMICS_FORMULAS.md`.

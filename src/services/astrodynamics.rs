@@ -657,6 +657,44 @@ pub fn calculate_sun_position_eci(time: DateTime<Utc>) -> [f64; 3] {
     [x, y, z]
 }
 
+/// Determines solar lighting state (Umbra, Penumbra, FullSunlight) of a position in ECI at given time.
+pub fn get_satellite_lighting_state(sat_eci: [f64; 3], time: DateTime<Utc>) -> LightingState {
+    let sun_eci = calculate_sun_position_eci(time);
+    let rs_km = 696_340.0;
+
+    let r_sat_mag =
+        (sat_eci[0] * sat_eci[0] + sat_eci[1] * sat_eci[1] + sat_eci[2] * sat_eci[2]).sqrt();
+    if r_sat_mag < 1.0 {
+        return LightingState::Umbra;
+    }
+    // Oblate Earth: local radius at the satellite's geocentric latitude
+    let re_km = earth_radius_at_geocentric_lat_km((sat_eci[2] / r_sat_mag).asin());
+    let d_vec = [
+        sun_eci[0] - sat_eci[0],
+        sun_eci[1] - sat_eci[1],
+        sun_eci[2] - sat_eci[2],
+    ];
+    let d_mag = (d_vec[0] * d_vec[0] + d_vec[1] * d_vec[1] + d_vec[2] * d_vec[2]).sqrt();
+    if d_mag < 1.0 {
+        return LightingState::FullSunlight;
+    }
+
+    let theta_e = (re_km / r_sat_mag).asin();
+    let theta_s = (rs_km / d_mag).asin();
+
+    let dot_prod = (-sat_eci[0] * d_vec[0] - sat_eci[1] * d_vec[1] - sat_eci[2] * d_vec[2])
+        / (r_sat_mag * d_mag);
+    let theta = dot_prod.clamp(-1.0, 1.0).acos();
+
+    if theta < theta_e - theta_s {
+        LightingState::Umbra
+    } else if (theta_e - theta_s).abs() <= theta && theta < theta_e + theta_s {
+        LightingState::Penumbra
+    } else {
+        LightingState::FullSunlight
+    }
+}
+
 /// Computes solar shadow geometry and observer twilight state
 pub fn calculate_illumination(
     satellite: &Satellite,
@@ -687,34 +725,7 @@ pub fn calculate_illumination(
 
     let sat_eci = prediction.position;
     let sun_eci = calculate_sun_position_eci(time);
-
-    let rs_km = 696_340.0;
-
-    let r_sat_mag =
-        (sat_eci[0] * sat_eci[0] + sat_eci[1] * sat_eci[1] + sat_eci[2] * sat_eci[2]).sqrt();
-    // Oblate Earth: local radius at the satellite's geocentric latitude
-    let re_km = earth_radius_at_geocentric_lat_km((sat_eci[2] / r_sat_mag).asin());
-    let d_vec = [
-        sun_eci[0] - sat_eci[0],
-        sun_eci[1] - sat_eci[1],
-        sun_eci[2] - sat_eci[2],
-    ];
-    let d_mag = (d_vec[0] * d_vec[0] + d_vec[1] * d_vec[1] + d_vec[2] * d_vec[2]).sqrt();
-
-    let theta_e = (re_km / r_sat_mag).asin();
-    let theta_s = (rs_km / d_mag).asin();
-
-    let dot_prod = (-sat_eci[0] * d_vec[0] - sat_eci[1] * d_vec[1] - sat_eci[2] * d_vec[2])
-        / (r_sat_mag * d_mag);
-    let theta = dot_prod.clamp(-1.0, 1.0).acos();
-
-    let lighting_state = if theta < theta_e - theta_s {
-        LightingState::Umbra
-    } else if (theta_e - theta_s).abs() <= theta && theta < theta_e + theta_s {
-        LightingState::Penumbra
-    } else {
-        LightingState::FullSunlight
-    };
+    let lighting_state = get_satellite_lighting_state(sat_eci, time);
 
     let gmst = calculate_local_sidereal_time(time, 0.0);
     let sun_ecf = eci_to_ecf(sun_eci, gmst);

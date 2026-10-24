@@ -377,3 +377,212 @@ async fn test_scene_missing_satellite_returns_404() {
     let (status, _, _) = call(&app, req).await;
     assert_eq!(status, 404);
 }
+
+#[tokio::test]
+async fn test_scene_conjunction_layer() {
+    let (app, token, iss_id, tiangong_id) = setup_app().await;
+    let t0 = Utc.with_ymd_and_hms(2024, 3, 25, 0, 0, 0).unwrap();
+
+    let scene_req = json!({
+        "start": t0.to_rfc3339(),
+        "durationHours": 6.0,
+        "stepSeconds": 60,
+        "layers": [
+            {
+                "type": "conjunction",
+                "primaryId": iss_id,
+                "secondaryId": tiangong_id,
+                "maxDistanceKm": 5000.0,
+                "label": "ISS-Tiangong Proximity"
+            }
+        ]
+    });
+
+    let post_req = Request::builder()
+        .method("POST")
+        .uri("/v1/scenes")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(scene_req.to_string()))
+        .unwrap();
+
+    let (status, _, body) = call(&app, post_req).await;
+    assert_eq!(status, 200, "Conjunction scene response: {body}");
+
+    let czml = body["czml"].as_array().expect("czml must be an array");
+    assert!(!czml.is_empty());
+
+    // Root document packet
+    assert_eq!(czml[0]["id"], "document");
+
+    // Check for either a TCA encounter set (marker, link, volume) or safe status
+    let has_tca = czml.iter().any(|p| {
+        p["id"]
+            .as_str()
+            .is_some_and(|id| id.contains("-tca-") && p.get("point").is_some())
+    });
+    let has_safe = czml
+        .iter()
+        .any(|p| p["id"].as_str().is_some_and(|id| id.contains("-safe")));
+
+    assert!(
+        has_tca || has_safe,
+        "CZML must contain either TCA conjunction geometry or a safe indicator packet"
+    );
+
+    if has_tca {
+        // Verify link polyline primitive
+        let link_pkt = czml
+            .iter()
+            .find(|p| {
+                p["id"]
+                    .as_str()
+                    .is_some_and(|id| id.contains("-link-") && p.get("polyline").is_some())
+            })
+            .expect("TCA link polyline packet must exist");
+        assert_eq!(link_pkt["polyline"]["positions"]["referenceFrame"], "FIXED");
+
+        // Verify ellipsoid volume primitive
+        let volume_pkt = czml
+            .iter()
+            .find(|p| {
+                p["id"]
+                    .as_str()
+                    .is_some_and(|id| id.contains("-volume-") && p.get("ellipsoid").is_some())
+            })
+            .expect("TCA ellipsoid volume packet must exist");
+        assert!(volume_pkt["ellipsoid"]["radii"]["cartesian"].is_array());
+        assert_eq!(volume_pkt["position"]["referenceFrame"], "FIXED");
+    }
+}
+
+#[tokio::test]
+async fn test_scene_illumination_layer() {
+    let (app, token, iss_id, _) = setup_app().await;
+    let t0 = Utc.with_ymd_and_hms(2024, 3, 25, 0, 0, 0).unwrap();
+
+    let scene_req = json!({
+        "start": t0.to_rfc3339(),
+        "durationHours": 4.0,
+        "stepSeconds": 60,
+        "layers": [
+            {
+                "type": "illumination",
+                "satelliteId": iss_id,
+                "label": "ISS Solar Illumination"
+            }
+        ]
+    });
+
+    let post_req = Request::builder()
+        .method("POST")
+        .uri("/v1/scenes")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(scene_req.to_string()))
+        .unwrap();
+
+    let (status, _, body) = call(&app, post_req).await;
+    assert_eq!(status, 200, "Illumination scene response: {body}");
+
+    let czml = body["czml"].as_array().expect("czml must be an array");
+    assert!(!czml.is_empty());
+
+    // Verify presence of illumination segment entities
+    let illum_segments: Vec<&Value> = czml
+        .iter()
+        .filter(|p| p["id"].as_str().is_some_and(|id| id.contains("-illum-")))
+        .collect();
+
+    assert!(
+        !illum_segments.is_empty(),
+        "Illumination layer must emit at least one segment track"
+    );
+
+    for seg in &illum_segments {
+        assert_eq!(seg["position"]["referenceFrame"], "FIXED");
+        assert_eq!(seg["position"]["interpolationAlgorithm"], "LAGRANGE");
+        assert!(seg.get("path").is_some());
+        assert!(seg.get("availability").is_some());
+    }
+
+    // Over a 4-hour LEO orbit (~92 min period), ISS transitions between sunlight and shadow multiple times
+    let names: Vec<&str> = illum_segments
+        .iter()
+        .filter_map(|s| s["name"].as_str())
+        .collect();
+    let has_sunlight = names.iter().any(|n| n.contains("Full Sunlight"));
+    let has_shadow = names
+        .iter()
+        .any(|n| n.contains("Umbra") || n.contains("Penumbra"));
+    assert!(has_sunlight, "Must contain sunlight segment: {names:?}");
+    assert!(has_shadow, "Must contain eclipse/shadow segment: {names:?}");
+}
+
+#[tokio::test]
+async fn test_scene_relative_motion_layer() {
+    let (app, token, iss_id, tiangong_id) = setup_app().await;
+    let t0 = Utc.with_ymd_and_hms(2024, 3, 25, 0, 0, 0).unwrap();
+
+    let scene_req = json!({
+        "start": t0.to_rfc3339(),
+        "durationHours": 2.0,
+        "stepSeconds": 60,
+        "layers": [
+            {
+                "type": "relativeMotion",
+                "primaryId": iss_id,
+                "targetId": tiangong_id,
+                "label": "CSS rel ISS"
+            }
+        ]
+    });
+
+    let post_req = Request::builder()
+        .method("POST")
+        .uri("/v1/scenes")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(scene_req.to_string()))
+        .unwrap();
+
+    let (status, _, body) = call(&app, post_req).await;
+    assert_eq!(status, 200, "Relative motion scene response: {body}");
+
+    let czml = body["czml"].as_array().expect("czml must be an array");
+
+    // Target orbit trajectory
+    let target_track = czml
+        .iter()
+        .find(|p| p["id"].as_str().is_some_and(|id| id.contains("-rel-track")))
+        .expect("Relative motion target track packet must exist");
+    assert_eq!(target_track["position"]["referenceFrame"], "FIXED");
+    assert_eq!(
+        target_track["position"]["interpolationAlgorithm"],
+        "LAGRANGE"
+    );
+
+    // Range vector link polyline
+    let link_pkt = czml
+        .iter()
+        .find(|p| p["id"].as_str().is_some_and(|id| id.contains("-rel-link")))
+        .expect("Relative motion range vector link polyline must exist");
+    assert_eq!(link_pkt["polyline"]["positions"]["referenceFrame"], "FIXED");
+
+    // RTN State marker (point + label with Hill/LVLH coordinates)
+    let marker_pkt = czml
+        .iter()
+        .find(|p| {
+            p["id"]
+                .as_str()
+                .is_some_and(|id| id.contains("-rel-marker"))
+        })
+        .expect("Relative motion RTN marker packet must exist");
+    assert_eq!(marker_pkt["position"]["referenceFrame"], "FIXED");
+    assert!(marker_pkt.get("point").is_some());
+    let label_text = marker_pkt["label"]["text"].as_str().unwrap();
+    assert!(
+        label_text.contains("Range:") && label_text.contains("R:") && label_text.contains("T:"),
+        "Label must contain RTN metrics: {label_text}"
+    );
+}

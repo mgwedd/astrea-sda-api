@@ -1134,7 +1134,34 @@ Hence the CZML step is capped at 120 s. `tests/czml_tests.rs` keeps a regression
 - **Time scale:** timestamps are UTC as supplied; leap-second handling by Cesium is unverified.
 
 ### 13.4 Composable Scenes (`POST /v1/scenes`)
-- **Multi-layer composition**: Aggregates heterogeneous layers (`groundtrack`, `passes`) into a single composed CZML document with a synchronized document `clock` interval spanning the full duration $[t_{start}, t_{end}]$.
+- **Multi-layer composition**: Aggregates heterogeneous layers (`groundtrack`, `passes`, `conjunction`, `illumination`, `relativeMotion`) into a single composed CZML document with a synchronized document `clock` interval spanning the full duration $[t_{start}, t_{end}]$.
 - **Layer Caps**: $\le 20$ layers per scene, duration $\le 24.0$ h, step $\le 120$ s, $\le 2000$ samples per track. Exceeding any cap returns HTTP 400 Bad Request before compute allocation.
 - **Compute Isolation**: Execution runs via `AstreaComputeEngine::run` on Rayon express/heavy pools with per-user concurrency quotas (`COMPUTE_JOB_QUOTA_BY_ROLE`) and bounded 5 s queue timeouts.
 - **Output Formats**: Default returns `SceneResponse` JSON containing `{ czml, droppedSamples, layerCount, start, end }`. Supplying query parameter `?format=czml` returns the raw CZML array with `Content-Type: application/vnd.cesium+json`.
+
+### 13.5 Advanced SDA Scene Layers & CZML Primitives (Phase 4 of #65)
+- **Pure CZML Packet Primitives** (`services::czml::packet`):
+  - `fixed_position(pos_km)`: Static ECEF cartesian coordinates converted to metres in `FIXED` reference frame.
+  - `point(pixel_size, rgba)`: Screen-space point graphic with solid fill and 1 px black outline.
+  - `label(text, font, rgba)`: Billboard label graphic with 2 px outline, `BOTTOM` vertical origin, and pixel offset.
+  - `polyline(positions_km, rgba, width)`: Multi-point line connecting ECEF coordinates in metres.
+  - `ellipsoid(radii_km, rgba, fill, outline)`: 3D ellipsoidal volume specified by Cartesian semi-axes $[a, b, c]$ in metres.
+  - `cylinder(length_km, top_radius_km, bottom_radius_km, rgba)`: 3D cylinder/cone volume for sensor FOV coverage geometry.
+- **Conjunction Layer (`conjunction`)**:
+  - Pairwise screening between primary and secondary satellites over $[t_{start}, t_{end}]$.
+  - At Time of Closest Approach (TCA):
+    - Marker (`point` + `label`) at primary satellite position $\vec{r}_p(t_{TCA})$.
+    - Miss distance link (`polyline`) directly connecting $\vec{r}_p(t_{TCA})$ and $\vec{r}_s(t_{TCA})$.
+    - Keep-out volume (`ellipsoid`) centered at $\vec{r}_p(t_{TCA})$ with semi-axes $R = \max(d_{min}, 1.0)\text{ km}$.
+- **Illumination Layer (`illumination`)**:
+  - Sampled trajectory points classified into solar lighting regimes (Section 4):
+    - Full Sunlight $\to$ Gold/Yellow `[255, 230, 0, 255]`
+    - Penumbra $\to$ Orange `[255, 140, 0, 255]`
+    - Umbra $\to$ Shadow Indigo `[70, 70, 180, 255]`
+  - Segmented into continuous interval tracks with independent availabilities and degree-5 Lagrange interpolation.
+- **Relative Motion Layer (`relativeMotion`)**:
+  - Evaluates Clohessy-Wiltshire / Hill's LVLH frame coordinates (Section 7) between primary and target satellites:
+    $$\vec{r}_{rel} = \Delta r \, \hat{e}_r + \Delta t \, \hat{e}_i + \Delta n \, \hat{e}_c$$
+  - Target orbit trajectory sampled and displayed in magenta (`[220, 50, 220, 255]`).
+  - Relative range vector link (`polyline`) connecting primary and target at epoch $t_{start}$.
+  - RTN readout marker (`point` + `label`) at target position detailing range $\rho$, radial $\Delta r$, in-track $\Delta t$, and cross-track $\Delta n$.

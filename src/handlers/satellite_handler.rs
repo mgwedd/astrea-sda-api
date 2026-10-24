@@ -1551,9 +1551,20 @@ pub async fn create_scene(
     let mut sat_ids: Vec<Uuid> = body
         .layers
         .iter()
-        .map(|l| match l {
-            SceneLayer::Groundtrack { satellite_id, .. } => *satellite_id,
-            SceneLayer::Passes { satellite_id, .. } => *satellite_id,
+        .flat_map(|l| match l {
+            SceneLayer::Groundtrack { satellite_id, .. } => vec![*satellite_id],
+            SceneLayer::Passes { satellite_id, .. } => vec![*satellite_id],
+            SceneLayer::Conjunction {
+                primary_id,
+                secondary_id,
+                ..
+            } => vec![*primary_id, *secondary_id],
+            SceneLayer::Illumination { satellite_id, .. } => vec![*satellite_id],
+            SceneLayer::RelativeMotion {
+                primary_id,
+                target_id,
+                ..
+            } => vec![*primary_id, *target_id],
         })
         .collect();
     sat_ids.sort();
@@ -1580,6 +1591,21 @@ pub async fn create_scene(
                     .ceil()
                     .max(1.0) as u64;
                 est_cost_ms += days * PASS_DAY_COST_MS;
+            }
+            SceneLayer::Conjunction { .. } => {
+                let duration_days = (duration_hours / 24.0).max(1.0 / 24.0);
+                est_cost_ms += AstreaComputeEngine::estimate_complexity(2, duration_days, 60.0)
+                    .map_err(|(status, msg)| {
+                        AppError::BadRequest(format!("{}: {}", status, msg))
+                    })?;
+            }
+            SceneLayer::Illumination { .. } => {
+                let samples = (duration_hours * 3600.0 / step_seconds as f64).ceil();
+                est_cost_ms += (samples * SAMPLE_COST_MS).ceil() as u64;
+            }
+            SceneLayer::RelativeMotion { .. } => {
+                let samples = (duration_hours * 3600.0 / step_seconds as f64).ceil();
+                est_cost_ms += (samples * SAMPLE_COST_MS * 2.0).ceil() as u64;
             }
         }
     }

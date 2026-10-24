@@ -4,7 +4,12 @@
 mod packet;
 
 use crate::error::AppError;
-use crate::models::{GroundTrackPoint, Satellite, SatellitePass, SceneLayer, SceneRequest};
+use crate::models::{
+    GroundTrackPoint, LightingState, Satellite, SatellitePass, SceneLayer, SceneRequest,
+};
+use crate::services::astrodynamics::{
+    calculate_local_sidereal_time, ecf_to_eci, get_satellite_lighting_state,
+};
 use crate::services::ephemeris::{Ephemeris, Samples};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
@@ -269,6 +274,230 @@ pub fn compose_scene(
                             "path": packet::path([255, 165, 0, 255]),
                         }));
                     }
+                }
+            }
+            SceneLayer::Conjunction {
+                primary_id,
+                secondary_id,
+                max_distance_km,
+                label,
+            } => {
+                let primary = satellites.get(primary_id).ok_or(AppError::NotFound)?;
+                let secondary = satellites.get(secondary_id).ok_or(AppError::NotFound)?;
+                let max_dist = max_distance_km.unwrap_or(10.0);
+                let duration_hours = ((end - start).num_seconds() as f64 / 3600.0)
+                    .ceil()
+                    .max(1.0) as i64;
+                let c_res = crate::services::astrodynamics::find_conjunctions(
+                    &[primary.clone(), secondary.clone()],
+                    start,
+                    max_dist,
+                    duration_hours,
+                );
+
+                let eph_p = Ephemeris::from_satellite(primary)?;
+                let eph_s = Ephemeris::from_satellite(secondary)?;
+
+                for (idx, m) in c_res.results.iter().enumerate() {
+                    let pt_p = eph_p.at(m.closest_approach_time);
+                    let pt_s = eph_s.at(m.closest_approach_time);
+                    if let (Some(p_p), Some(p_s)) = (pt_p, pt_s) {
+                        let base_label = label.as_deref().unwrap_or("Conjunction");
+                        // Marker (point + label) at TCA
+                        doc.push(json!({
+                            "id": format!("{primary_id}-{secondary_id}-layer-{layer_idx}-tca-{idx}"),
+                            "name": format!("{base_label} - TCA ({:.2} km)", m.min_distance_km),
+                            "availability": packet::availability(start, end),
+                            "position": packet::fixed_position(p_p.position_ecf_km),
+                            "point": packet::point(8.0, [255, 50, 50, 255]),
+                            "label": packet::label(
+                                &format!("TCA: {:.2} km @ {}", m.min_distance_km, m.closest_approach_time.format("%H:%M:%S")),
+                                None,
+                                [255, 200, 200, 255],
+                            ),
+                        }));
+
+                        // Polyline link between primary and secondary at TCA
+                        doc.push(json!({
+                            "id": format!("{primary_id}-{secondary_id}-layer-{layer_idx}-link-{idx}"),
+                            "name": format!("{base_label} - Miss Distance Vector ({:.2} km)", m.min_distance_km),
+                            "availability": packet::availability(start, end),
+                            "polyline": packet::polyline(&[p_p.position_ecf_km, p_s.position_ecf_km], [255, 255, 0, 255], 2.0),
+                        }));
+
+                        // Ellipsoid collision keep-out volume at TCA
+                        let radius_km = m.min_distance_km.max(1.0);
+                        doc.push(json!({
+                            "id": format!("{primary_id}-{secondary_id}-layer-{layer_idx}-volume-{idx}"),
+                            "name": format!("{base_label} - Keep-Out Volume ({:.2} km)", radius_km),
+                            "availability": packet::availability(start, end),
+                            "position": packet::fixed_position(p_p.position_ecf_km),
+                            "ellipsoid": packet::ellipsoid([radius_km, radius_km, radius_km], [255, 0, 0, 80], true, true),
+                        }));
+                    }
+                }
+
+                if c_res.results.is_empty() {
+                    let display_name = format!(
+                        "{} - Safe (No conjunction within {:.1} km)",
+                        label.as_deref().unwrap_or("Conjunction"),
+                        max_dist
+                    );
+                    doc.push(json!({
+                        "id": format!("{primary_id}-{secondary_id}-layer-{layer_idx}-safe"),
+                        "name": display_name,
+                        "availability": packet::availability(start, end),
+                    }));
+                }
+            }
+            SceneLayer::Illumination {
+                satellite_id,
+                label,
+            } => {
+                let satellite = satellites.get(satellite_id).ok_or(AppError::NotFound)?;
+                let eph = Ephemeris::from_satellite(satellite)?;
+                let span = (end - start).num_seconds().max(1) as usize;
+                let Samples {
+                    mut points,
+                    dropped,
+                } = eph.range(start, span, step_seconds, cancel)?;
+                dropped_total += dropped;
+                if points.last().is_some_and(|l| l.timestamp < end) {
+                    match eph.at(end) {
+                        Some(last) => points.push(last),
+                        None => dropped_total += 1,
+                    }
+                }
+
+                if !points.is_empty() {
+                    // Group continuous points by lighting state
+                    let mut segments: Vec<(LightingState, Vec<GroundTrackPoint>)> = Vec::new();
+                    for pt in points {
+                        let lst = calculate_local_sidereal_time(pt.timestamp, 0.0);
+                        let sat_eci = ecf_to_eci(pt.position_ecf_km, lst);
+                        let state = get_satellite_lighting_state(sat_eci, pt.timestamp);
+
+                        if let Some(last_seg) = segments.last_mut() {
+                            if last_seg.0 == state {
+                                last_seg.1.push(pt);
+                                continue;
+                            } else {
+                                let bridge_pt = last_seg.1.last().cloned();
+                                let mut next_pts = Vec::new();
+                                if let Some(b) = bridge_pt {
+                                    next_pts.push(b);
+                                }
+                                next_pts.push(pt);
+                                segments.push((state, next_pts));
+                                continue;
+                            }
+                        }
+                        segments.push((state, vec![pt]));
+                    }
+
+                    for (seg_idx, (state, seg_pts)) in segments.into_iter().enumerate() {
+                        if seg_pts.is_empty() {
+                            continue;
+                        }
+                        let first = seg_pts[0].timestamp;
+                        let last = seg_pts[seg_pts.len() - 1].timestamp;
+                        let (state_name, color) = match state {
+                            LightingState::FullSunlight => ("Full Sunlight", [255, 230, 0, 255]),
+                            LightingState::Penumbra => ("Penumbra", [255, 140, 0, 255]),
+                            LightingState::Umbra => ("Umbra (Shadow)", [70, 70, 180, 255]),
+                        };
+                        let display_name = format!(
+                            "{} - {}",
+                            label.as_deref().unwrap_or(&satellite.name),
+                            state_name
+                        );
+                        doc.push(json!({
+                            "id": format!("{satellite_id}-layer-{layer_idx}-illum-{seg_idx}"),
+                            "name": display_name,
+                            "availability": packet::availability(first, last),
+                            "position": packet::sampled_position(
+                                first,
+                                seg_pts.iter().map(|p| (p.timestamp, p.position_ecf_km)),
+                            ),
+                            "path": packet::path(color),
+                        }));
+                    }
+                }
+            }
+            SceneLayer::RelativeMotion {
+                primary_id,
+                target_id,
+                label,
+            } => {
+                let primary = satellites.get(primary_id).ok_or(AppError::NotFound)?;
+                let target = satellites.get(target_id).ok_or(AppError::NotFound)?;
+                let duration_mins =
+                    ((end - start).num_seconds() as f64 / 60.0).ceil().max(1.0) as usize;
+                let rel_res = crate::services::astrodynamics::calculate_relative_motion(
+                    primary,
+                    target,
+                    start,
+                    duration_mins,
+                    step_seconds,
+                )?;
+
+                let eph_p = Ephemeris::from_satellite(primary)?;
+                let eph_t = Ephemeris::from_satellite(target)?;
+
+                let span = (end - start).num_seconds().max(1) as usize;
+                let Samples {
+                    points: mut target_points,
+                    dropped,
+                } = eph_t.range(start, span, step_seconds, cancel)?;
+                dropped_total += dropped;
+                if target_points.last().is_some_and(|l| l.timestamp < end) {
+                    match eph_t.at(end) {
+                        Some(last) => target_points.push(last),
+                        None => dropped_total += 1,
+                    }
+                }
+
+                let display_name = label.as_deref().unwrap_or(&target.name);
+                if !target_points.is_empty() {
+                    let (first, last) = (
+                        target_points[0].timestamp,
+                        target_points[target_points.len() - 1].timestamp,
+                    );
+                    doc.push(json!({
+                        "id": format!("{primary_id}-{target_id}-layer-{layer_idx}-rel-track"),
+                        "name": format!("{} (Target Orbit)", display_name),
+                        "availability": packet::availability(first, last),
+                        "position": packet::sampled_position(
+                            first,
+                            target_points.iter().map(|p| (p.timestamp, p.position_ecf_km)),
+                        ),
+                        "path": packet::path([220, 50, 220, 255]),
+                    }));
+                }
+
+                if let (Some(pt_p), Some(pt_t)) = (eph_p.at(start), eph_t.at(start)) {
+                    doc.push(json!({
+                        "id": format!("{primary_id}-{target_id}-layer-{layer_idx}-rel-link"),
+                        "name": format!("Relative Range Vector ({:.2} km)", rel_res.relative_distance_km),
+                        "availability": packet::availability(start, end),
+                        "polyline": packet::polyline(&[pt_p.position_ecf_km, pt_t.position_ecf_km], [255, 105, 180, 255], 2.0),
+                    }));
+
+                    let rtn_text = format!(
+                        "Range: {:.2} km | R: {:.2} km, T: {:.2} km, N: {:.2} km",
+                        rel_res.relative_distance_km,
+                        rel_res.radial_distance_km,
+                        rel_res.in_track_distance_km,
+                        rel_res.cross_track_distance_km
+                    );
+                    doc.push(json!({
+                        "id": format!("{primary_id}-{target_id}-layer-{layer_idx}-rel-marker"),
+                        "name": format!("{} - RTN State", display_name),
+                        "availability": packet::availability(start, end),
+                        "position": packet::fixed_position(pt_t.position_ecf_km),
+                        "point": packet::point(8.0, [255, 105, 180, 255]),
+                        "label": packet::label(&rtn_text, None, [255, 192, 203, 255]),
+                    }));
                 }
             }
         }
