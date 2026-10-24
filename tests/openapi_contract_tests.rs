@@ -141,6 +141,10 @@ fn test_openapi_schema_static_contract() {
         paths["/v1/satellites/decay-watch"]["get"]["operationId"].as_str() == Some("getDecayWatch"),
         "Missing or invalid operationId for GET /v1/satellites/decay-watch"
     );
+    assert!(
+        paths["/v1/scenes"]["post"]["operationId"].as_str() == Some("createScene"),
+        "Missing or invalid operationId for POST /v1/scenes"
+    );
 
     // Verify REST Architecture Tag Separation:
     // Satellite-scoped endpoints belong to the "Satellites" resource tag
@@ -215,6 +219,7 @@ fn test_openapi_schema_static_contract() {
         ),
         (&paths["/v1/transits/solar"]["get"], "getSolarTransits"),
         (&paths["/v1/transits/lunar"]["get"], "getLunarTransits"),
+        (&paths["/v1/scenes"]["post"], "createScene"),
     ];
     for (endpoint, op) in astro_endpoints {
         assert_eq!(
@@ -275,6 +280,10 @@ fn test_openapi_schema_static_contract() {
         "DecayWatchResponse",
         "CollisionProbabilityRequest",
         "CollisionProbabilityResponse",
+        "SceneRequest",
+        "SceneResponse",
+        "SceneLayer",
+        "SceneObserverLocation",
         "PaginationMeta",
         "PaginatedResponseSatellite",
         "ErrorResponse",

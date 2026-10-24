@@ -2054,6 +2054,125 @@
         ]
       }
     },
+    "/v1/scenes": {
+      "post": {
+        "tags": [
+          "Astrodynamics"
+        ],
+        "summary": "Create Composed 3D/4D Scene",
+        "description": "Composes multiple scene layers (ground tracks, passes) into a single cohesive CZML document with a shared document clock and timeline.",
+        "operationId": "createScene",
+        "parameters": [
+          {
+            "name": "format",
+            "in": "query",
+            "description": "Format of the response: `json` (default, returns `SceneResponse`) or `czml` (returns raw CZML array).",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SceneRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Composed 3D/4D CZML scene generated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SceneResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request payload or scene caps exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Missing or invalid JWT token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "One or more satellites in the scene layers not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Per-user concurrent compute quota exceeded (COMPUTE_JOB_QUOTA_BY_ROLE, default 5; admin 50); retry when a job finishes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal calculation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No compute slot freed within the queue wait; retry shortly",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Computation exceeded the 30 s limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/v1/transits/lunar": {
       "get": {
         "tags": [
@@ -4137,6 +4256,182 @@
           },
           "name": {
             "type": "string"
+          }
+        }
+      },
+      "SceneLayer": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "3D orbital trajectory / ground track for a satellite",
+            "required": [
+              "satellite_id",
+              "type"
+            ],
+            "properties": {
+              "label": {
+                "type": "string",
+                "description": "Optional human-readable display label",
+                "nullable": true
+              },
+              "rgba": {
+                "type": "string",
+                "format": "binary",
+                "description": "Optional RGBA color override [r, g, b, a] with values 0-255",
+                "nullable": true
+              },
+              "satellite_id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "Unique satellite identifier"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "groundtrack"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Ground station pass visibility intervals and topocentric tracks",
+            "required": [
+              "satellite_id",
+              "observer",
+              "type"
+            ],
+            "properties": {
+              "label": {
+                "type": "string",
+                "description": "Optional human-readable display label",
+                "nullable": true
+              },
+              "min_elevation": {
+                "type": "number",
+                "format": "double",
+                "description": "Minimum elevation angle threshold in degrees (defaults to 10.0)",
+                "nullable": true
+              },
+              "observer": {
+                "$ref": "#/components/schemas/SceneObserverLocation"
+              },
+              "satellite_id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "Unique satellite identifier"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "passes"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Discriminated union of scene layer specifications.",
+        "discriminator": {
+          "propertyName": "type"
+        }
+      },
+      "SceneObserverLocation": {
+        "type": "object",
+        "description": "Observer geodetic location for ground station pass layers.",
+        "required": [
+          "lat",
+          "lon"
+        ],
+        "properties": {
+          "altM": {
+            "type": "number",
+            "format": "double",
+            "description": "Observer altitude above sea level in meters (defaults to 0.0)",
+            "nullable": true
+          },
+          "lat": {
+            "type": "number",
+            "format": "double",
+            "description": "Observer latitude in decimal degrees (-90.0 to 90.0)"
+          },
+          "lon": {
+            "type": "number",
+            "format": "double",
+            "description": "Observer longitude in decimal degrees (-180.0 to 180.0)"
+          }
+        }
+      },
+      "SceneRequest": {
+        "type": "object",
+        "description": "Top-level request payload for composing a 3D/4D CZML scene.",
+        "required": [
+          "layers"
+        ],
+        "properties": {
+          "durationHours": {
+            "type": "number",
+            "format": "double",
+            "description": "Scene duration in hours (0.1 to 24.0, defaults to 6.0)",
+            "nullable": true
+          },
+          "layers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SceneLayer"
+            },
+            "description": "List of renderable layers in the scene (1 to 20 layers)"
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Calculation start epoch in UTC (defaults to current time if omitted)",
+            "nullable": true
+          },
+          "stepSeconds": {
+            "type": "integer",
+            "description": "Ephemeris trajectory sample spacing in seconds (1 to 120, defaults to 30)",
+            "nullable": true,
+            "minimum": 0
+          }
+        }
+      },
+      "SceneResponse": {
+        "type": "object",
+        "description": "Structured response for a composed scene.",
+        "required": [
+          "czml",
+          "droppedSamples",
+          "layerCount",
+          "start",
+          "end"
+        ],
+        "properties": {
+          "czml": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Composed CZML document containing the document packet followed by layer entity packets"
+          },
+          "droppedSamples": {
+            "type": "integer",
+            "description": "Total count of sample instants SGP4 could not produce across all layers",
+            "minimum": 0
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Scene calculation time window end in UTC"
+          },
+          "layerCount": {
+            "type": "integer",
+            "description": "Total count of successfully composed layers in the scene",
+            "minimum": 0
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Scene calculation time window start in UTC"
           }
         }
       },

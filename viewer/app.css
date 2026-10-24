@@ -1,7 +1,12 @@
 html,body{margin:0;height:100%;font-family:system-ui,sans-serif;background:#0b0e14;color:#e6e6e6}
 #login{max-width:22rem;margin:10vh auto;display:grid;gap:.75rem}
 #login label{display:grid;gap:.25rem}
-#app{display:grid;grid-template-rows:auto 1fr;height:100%}
-header{display:flex;gap:.75rem;align-items:center;padding:.5rem;flex-wrap:wrap}
+#app{display:grid;grid-template-rows:auto 1fr;height:100%;position:relative}
+header{display:flex;gap:.75rem;align-items:center;padding:.5rem;flex-wrap:wrap;background:#151921;border-bottom:1px solid #232936}
 #globe{min-height:0}
 #login-error{color:#ff6b6b;min-height:1.2em}
+#inspector{position:absolute;top:3.5rem;right:1rem;background:rgba(15,20,28,0.92);border:1px solid #2b3548;padding:1rem;border-radius:6px;width:18rem;z-index:99;box-shadow:0 4px 12px rgba(0,0,0,0.5)}
+#inspector h3{margin:0 0 .5rem;font-size:1rem;display:flex;justify-content:space-between;align-items:center}
+#inspector button.close{background:transparent;border:0;color:#99a;cursor:pointer;font-size:1.2rem;line-height:1}
+#inspector-body{font-size:.85rem;line-height:1.4}
+#inspector-body p{margin:0.25rem 0}

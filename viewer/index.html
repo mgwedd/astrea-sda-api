@@ -25,10 +25,15 @@
     <select id="sat" aria-label="Satellite"></select>
     <label>Minutes <input id="minutes" type="number" min="1" max="1440" value="90"></label>
     <button id="load">Ground track</button>
+    <button id="load-scene">Compose scene</button>
     <span id="status" role="status"></span>
     <button id="logout">Sign out</button>
   </header>
   <div id="globe"></div>
+  <aside id="inspector" hidden>
+    <h3><span id="inspector-title">Inspector</span> <button type="button" class="close" id="inspector-close" aria-label="Close">&times;</button></h3>
+    <div id="inspector-body"></div>
+  </aside>
 </div>
 <p id="no-cesium" hidden>Cesium assets not found. Set <code>VIEWER_ASSETS_DIR</code> (see docs/VIEWER.md).</p>
 <script src="/viewer/cesium/Cesium.js"></script>

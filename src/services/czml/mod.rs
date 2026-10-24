@@ -4,9 +4,11 @@
 mod packet;
 
 use crate::error::AppError;
-use crate::models::{GroundTrackPoint, Satellite, SatellitePass};
+use crate::models::{GroundTrackPoint, Satellite, SatellitePass, SceneLayer, SceneRequest};
 use crate::services::ephemeris::{Ephemeris, Samples};
+use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -14,11 +16,51 @@ use uuid::Uuid;
 /// LEO and Molniya (measured, docs/CZML_VIEWER_LOG.md R1).
 pub const MAX_STEP_SECS: usize = 120;
 
+/// Maximum layers per composed scene.
+pub const MAX_SCENE_LAYERS: usize = 20;
+/// Maximum duration in hours for a composed scene.
+pub const MAX_SCENE_DURATION_HOURS: f64 = 24.0;
+/// Maximum samples per track in a scene.
+pub const MAX_SAMPLES_PER_TRACK: usize = 2000;
+
 /// Rejects sample spacing too coarse for the interpolation we declare.
 pub fn check_step(step_seconds: usize) -> Result<(), AppError> {
     if step_seconds > MAX_STEP_SECS {
         return Err(AppError::BadRequest(format!(
             "step_seconds must be <= {MAX_STEP_SECS} for CZML output"
+        )));
+    }
+    Ok(())
+}
+
+/// Validates scene parameters and caps before calculation.
+pub fn check_scene_request(req: &SceneRequest) -> Result<(), AppError> {
+    if req.layers.is_empty() {
+        return Err(AppError::BadRequest(
+            "Scene must contain at least 1 layer".into(),
+        ));
+    }
+    if req.layers.len() > MAX_SCENE_LAYERS {
+        return Err(AppError::BadRequest(format!(
+            "Scene exceeds maximum of {MAX_SCENE_LAYERS} layers"
+        )));
+    }
+    let duration_hours = req.duration_hours.unwrap_or(6.0);
+    if duration_hours <= 0.0 || duration_hours > MAX_SCENE_DURATION_HOURS {
+        return Err(AppError::BadRequest(format!(
+            "duration_hours must be between 0.0 and {MAX_SCENE_DURATION_HOURS}"
+        )));
+    }
+    let step_seconds = req.step_seconds.unwrap_or(30);
+    if step_seconds == 0 || step_seconds > MAX_STEP_SECS {
+        return Err(AppError::BadRequest(format!(
+            "step_seconds must be between 1 and {MAX_STEP_SECS} for CZML output"
+        )));
+    }
+    let samples = (duration_hours * 3600.0 / step_seconds as f64).ceil() as usize;
+    if samples > MAX_SAMPLES_PER_TRACK {
+        return Err(AppError::BadRequest(format!(
+            "Samples per track ({samples}) exceeds maximum of {MAX_SAMPLES_PER_TRACK} (increase step_seconds or reduce duration)"
         )));
     }
     Ok(())
@@ -108,6 +150,130 @@ pub fn passes_document(
         })
         .collect::<Result<Vec<_>, AppError>>()?;
     let doc = tracks_document(&format!("Passes for {}", satellite.name), &tracks);
+    Ok((doc, dropped_total))
+}
+
+/// Composes multiple scene layers into a single cohesive CZML document.
+pub fn compose_scene(
+    name: &str,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    step_seconds: usize,
+    layers: &[SceneLayer],
+    satellites: &HashMap<Uuid, Satellite>,
+    cancel: &CancellationToken,
+) -> Result<(Vec<Value>, usize), AppError> {
+    let mut doc = vec![packet::document(name, start, end)];
+    let mut dropped_total = 0;
+
+    for (layer_idx, layer) in layers.iter().enumerate() {
+        if cancel.is_cancelled() {
+            return Err(AppError::InternalServerError(
+                "Computation cancelled".into(),
+            ));
+        }
+
+        match layer {
+            SceneLayer::Groundtrack {
+                satellite_id,
+                label,
+                rgba,
+            } => {
+                let satellite = satellites.get(satellite_id).ok_or(AppError::NotFound)?;
+                let eph = Ephemeris::from_satellite(satellite)?;
+                let span = (end - start).num_seconds().max(1) as usize;
+                let Samples {
+                    mut points,
+                    dropped,
+                } = eph.range(start, span, step_seconds, cancel)?;
+                dropped_total += dropped;
+                if points.last().is_some_and(|l| l.timestamp < end) {
+                    match eph.at(end) {
+                        Some(last) => points.push(last),
+                        None => dropped_total += 1,
+                    }
+                }
+                if !points.is_empty() {
+                    let (first, last) = (points[0].timestamp, points[points.len() - 1].timestamp);
+                    let display_name = label.as_deref().unwrap_or(&satellite.name);
+                    let color = rgba.unwrap_or(TRACK_RGBA);
+                    doc.push(json!({
+                        "id": format!("{satellite_id}-layer-{layer_idx}"),
+                        "name": display_name,
+                        "availability": packet::availability(first, last),
+                        "position": packet::sampled_position(
+                            first,
+                            points.iter().map(|p| (p.timestamp, p.position_ecf_km)),
+                        ),
+                        "path": packet::path(color),
+                    }));
+                }
+            }
+            SceneLayer::Passes {
+                satellite_id,
+                observer,
+                min_elevation,
+                label,
+            } => {
+                let satellite = satellites.get(satellite_id).ok_or(AppError::NotFound)?;
+                let eph = Ephemeris::from_satellite(satellite)?;
+                let min_el = min_elevation.unwrap_or(10.0);
+                let alt_m = observer.alt_m.unwrap_or(0.0);
+                let days = ((end - start).num_seconds() as f64 / 86400.0)
+                    .ceil()
+                    .max(1.0) as usize;
+                let sched = crate::services::astrodynamics::find_pass_schedule(
+                    satellite,
+                    observer.lat,
+                    observer.lon,
+                    alt_m,
+                    start,
+                    min_el,
+                    days,
+                    false,
+                    cancel,
+                )?;
+
+                for p in &sched.passes {
+                    if p.los_time <= start || p.aos_time >= end {
+                        continue;
+                    }
+                    let pass_start = p.aos_time.max(start);
+                    let pass_end = p.los_time.min(end);
+                    let span = (pass_end - pass_start).num_seconds().max(1) as usize;
+                    let Samples {
+                        mut points,
+                        dropped,
+                    } = eph.range(pass_start, span, PASS_STEP_SECS, cancel)?;
+                    dropped_total += dropped;
+                    if points.last().is_some_and(|l| l.timestamp < pass_end) {
+                        match eph.at(pass_end) {
+                            Some(last) => points.push(last),
+                            None => dropped_total += 1,
+                        }
+                    }
+                    if !points.is_empty() {
+                        let display_name = format!(
+                            "{} - Pass {}",
+                            label.as_deref().unwrap_or(&satellite.name),
+                            p.pass_id
+                        );
+                        doc.push(json!({
+                            "id": format!("{satellite_id}-layer-{layer_idx}-pass-{}", p.pass_id),
+                            "name": display_name,
+                            "availability": packet::availability(pass_start, pass_end),
+                            "position": packet::sampled_position(
+                                pass_start,
+                                points.iter().map(|pt| (pt.timestamp, pt.position_ecf_km)),
+                            ),
+                            "path": packet::path([255, 165, 0, 255]),
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
     Ok((doc, dropped_total))
 }
 

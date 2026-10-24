@@ -67,6 +67,7 @@ impl Modify for SecurityAddon {
         handlers::satellite_handler::calculate_collision_probability,
         handlers::satellite_handler::transform_elements,
         handlers::satellite_handler::transform_frames,
+        handlers::satellite_handler::create_scene,
     ),
     components(
         schemas(
@@ -126,6 +127,10 @@ impl Modify for SecurityAddon {
             models::LookAnglesDetail,
             models::FrameTransformRequest,
             models::FrameTransformResponse,
+            models::SceneRequest,
+            models::SceneResponse,
+            models::SceneLayer,
+            models::SceneObserverLocation,
             handlers::satellite_handler::PipelineSyncResponse,
             handlers::satellite_handler::PipelineGroupSyncDetail,
             pagination::PaginationMeta,
@@ -244,6 +249,7 @@ pub fn create_router_with_auth_and_limiter(
         .route("/transits/solar", get(handlers::get_solar_transits))
         .route("/transits/lunar", get(handlers::get_lunar_transits))
         .route("/pipelines/sync", post(handlers::trigger_pipeline_sync))
+        .route("/scenes", post(handlers::create_scene))
         .with_state(repo)
         .layer(axum::middleware::from_fn_with_state(
             limiter,
