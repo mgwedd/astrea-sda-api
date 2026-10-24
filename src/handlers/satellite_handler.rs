@@ -7,8 +7,8 @@ use crate::models::{
     FrameTransformRequest, FrameTransformResponse, GroundTrackResponse, IlluminationResponse,
     ManeuverQueryParams, ManeuversResponse, NextVisiblePassResponse, OverheadResponse,
     PassScheduleResponse, RelativeMotionResponse, Satellite, SatelliteDecayRiskResponse,
-    SatelliteStateResponse, TransitPredictionResponse, TransitQueryParams, TransitTarget,
-    UpdateSatelliteDto,
+    SatelliteStateResponse, SceneLayer, SceneQueryParams, SceneRequest, SceneResponse,
+    TransitPredictionResponse, TransitQueryParams, TransitTarget, UpdateSatelliteDto,
 };
 use crate::pagination::{PaginatedResponse, PaginationQuery};
 use crate::repository::SatelliteRepository;
@@ -24,6 +24,7 @@ const PASS_DAY_COST_MS: u64 = 2;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
+    response::IntoResponse,
     Json,
 };
 use chrono::{DateTime, Utc};
@@ -1506,4 +1507,134 @@ pub async fn transform_frames(
     claims.require_role(UserRole::Viewer)?;
     let res = astrodynamics::transform_coordinate_frame(&req)?;
     Ok(Json(res))
+}
+
+/// Create Composed 3D/4D Scene
+///
+/// Composes multiple scene layers (ground tracks, passes) into a single cohesive CZML document with a shared document clock and timeline.
+#[utoipa::path(
+    post,
+    path = "/v1/scenes",
+    operation_id = "createScene",
+    request_body = SceneRequest,
+    params(
+        SceneQueryParams
+    ),
+    responses(
+        (status = 200, description = "Composed 3D/4D CZML scene generated successfully", body = SceneResponse),
+        (status = 400, description = "Invalid request payload or scene caps exceeded", body = ErrorResponse),
+        (status = 401, description = "Unauthorized - Missing or invalid JWT token", body = ErrorResponse),
+        (status = 404, description = "One or more satellites in the scene layers not found", body = ErrorResponse),
+        (status = 429, description = "Per-user concurrent compute quota exceeded (COMPUTE_JOB_QUOTA_BY_ROLE, default 5; admin 50); retry when a job finishes", body = ErrorResponse),
+        (status = 503, description = "No compute slot freed within the queue wait; retry shortly", body = ErrorResponse),
+        (status = 504, description = "Computation exceeded the 30 s limit", body = ErrorResponse),
+        (status = 500, description = "Internal calculation error", body = ErrorResponse)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "Astrodynamics"
+)]
+pub async fn create_scene(
+    State(repo): State<SatelliteRepository>,
+    claims: Claims,
+    Query(query): Query<SceneQueryParams>,
+    Json(body): Json<SceneRequest>,
+) -> Result<axum::response::Response, AppError> {
+    czml::check_scene_request(&body)?;
+
+    let start = body.start.unwrap_or_else(Utc::now);
+    let duration_hours = body.duration_hours.unwrap_or(6.0);
+    let step_seconds = body.step_seconds.unwrap_or(30);
+    let duration_ms = (duration_hours * 3600.0 * 1000.0) as i64;
+    let end = start + chrono::Duration::milliseconds(duration_ms);
+
+    // Fetch all unique satellites needed by the layers
+    let mut sat_ids: Vec<Uuid> = body
+        .layers
+        .iter()
+        .map(|l| match l {
+            SceneLayer::Groundtrack { satellite_id, .. } => *satellite_id,
+            SceneLayer::Passes { satellite_id, .. } => *satellite_id,
+        })
+        .collect();
+    sat_ids.sort();
+    sat_ids.dedup();
+
+    let mut sats_map = std::collections::HashMap::new();
+    let mut sat_cache_keys = Vec::new();
+    for id in sat_ids {
+        let sat = repo.get_satellite_by_id(id).await?;
+        sat_cache_keys.push(format!("{}:{}", sat.id, sat.last_modified_date.timestamp()));
+        sats_map.insert(id, sat);
+    }
+
+    // Estimate compute complexity
+    let mut est_cost_ms: u64 = 0;
+    for layer in &body.layers {
+        match layer {
+            SceneLayer::Groundtrack { .. } => {
+                let samples = (duration_hours * 3600.0 / step_seconds as f64).ceil();
+                est_cost_ms += (samples * SAMPLE_COST_MS).ceil() as u64;
+            }
+            SceneLayer::Passes { .. } => {
+                let days = ((end - start).num_seconds() as f64 / 86400.0)
+                    .ceil()
+                    .max(1.0) as u64;
+                est_cost_ms += days * PASS_DAY_COST_MS;
+            }
+        }
+    }
+    let est_cost_ms = est_cost_ms.max(1);
+
+    let cache_key = format!(
+        "scene:{}:{}:{}:{}:{}",
+        start.timestamp_millis(),
+        duration_hours,
+        step_seconds,
+        sat_cache_keys.join(","),
+        serde_json::to_string(&body.layers).unwrap_or_default()
+    );
+
+    let engine = repo.compute.clone();
+    let (user_id, role) = (claims.sub.clone(), claims.canonical_role());
+    let layers = body.layers.clone();
+
+    let res: (Vec<serde_json::Value>, usize) = repo
+        .cache
+        .get_or_insert_with(&cache_key, || async move {
+            let scene_res = engine
+                .run(est_cost_ms, user_id, role, move |cancel| {
+                    czml::compose_scene(
+                        "Astrea Composed Scene",
+                        start,
+                        end,
+                        step_seconds,
+                        &layers,
+                        &sats_map,
+                        &cancel,
+                    )
+                })
+                .await?;
+
+            scene_res.map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(map_calculation_error)?;
+
+    if query.format.as_deref() == Some("czml") {
+        let mut response = axum::Json(res.0).into_response();
+        response.headers_mut().insert(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("application/vnd.cesium+json"),
+        );
+        Ok(response)
+    } else {
+        Ok(axum::Json(SceneResponse {
+            czml: res.0,
+            dropped_samples: res.1,
+            layer_count: body.layers.len(),
+            start,
+            end,
+        })
+        .into_response())
+    }
 }

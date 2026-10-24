@@ -122,3 +122,13 @@ Format: `YYYY-MM-DD — item — what was run — result — status change`.
 - 2026-10-08 — **R23 (new, M)** — CSP allows `'unsafe-eval'`, which weakens the XSS defence R11 relies on. Script injection is still blocked (no inline, no third-party), but an injected string can reach `eval`. Fix needs an engine-only Cesium build with no Knockout (needs a bundler, against "no build step"). Revisit if the threat model moves beyond internal ops (Q1).
 - 2026-10-08 — still open from phase 2 scope: R2/Q3 (FIXED-frame offset vs Cesium Earth orientation) and R16 (time scales) need a numeric comparison inside Cesium, not done in this step; ground-truth frame accuracy remains as stated in §12.7.
 - 2026-10-08 — `/v1/auth/signup` accepts a self-chosen `role` (`editor` was granted to an unauthenticated signup on the in-memory provider while seeding the test). Preexisting, outside viewer scope; for #75.
+
+## Phase 3 (composable scenes & interaction, branch `feat/composable-scenes-endpoint`)
+
+- 2026-10-24 — Phase 3 architecture: `POST /v1/scenes` takes `SceneRequest` with a list of renderable layers (`Groundtrack`, `Passes`), time window (`start`, `duration_hours`), and sample spacing (`step_seconds`).
+  - Pre-validation in `check_scene_request` enforces hard caps before compute/cache: $\le 20$ layers, $\le 24$ h duration, $\le 120$ s step, $\le 2000$ samples/track (HTTP 400 Bad Request).
+  - Executed on `AstreaComputeEngine::run` on Rayon pools with per-user quota and timeout guards.
+  - Generates unified CZML document with shared `clock` packet across all layers, explicit `FIXED` frame, and degree-clamped Lagrange interpolation.
+  - Supports both structured `SceneResponse` and raw CZML array via `?format=czml` (`Content-Type: application/vnd.cesium+json`).
+  - `/viewer` enhanced with scene composition action and click-to-query entity inspector (`requestInspector`) displaying live telemetry without breaking zero-persistence auth security rules.
+  - Verified with 5/5 tests in `tests/scene_tests.rs`.

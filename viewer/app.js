@@ -35,6 +35,28 @@
     });
     const list = await api("/v1/satellites?limit=100");
     $("sat").replaceChildren(...list.data.map((s) => new Option(s.name, s.id)));
+
+    viewer.selectedEntityChanged.addEventListener(async (entity) => {
+      const panel = $("inspector");
+      if (!entity) { panel.hidden = true; return; }
+      panel.hidden = false;
+      const title = entity.name || entity.id || "Entity";
+      $("inspector-title").textContent = title;
+      const satId = $("sat").value;
+      $("inspector-body").innerHTML = `<p>ID: <code>${entity.id}</code></p><p>Loading state telemetry…</p>`;
+      try {
+        const state = await api(`/v1/satellites/${satId}/state`);
+        $("inspector-body").innerHTML = `
+          <p><strong>${state.satelliteName}</strong></p>
+          <p>Altitude: ${state.altitudeKm.toFixed(1)} km</p>
+          <p>Speed: ${state.speedKmS.toFixed(2)} km/s</p>
+          <p>Period: ${state.orbitalPeriodMinutes.toFixed(1)} min</p>
+          <p>Lat/Lon: ${state.latitudeDeg.toFixed(2)}°, ${state.longitudeDeg.toFixed(2)}°</p>
+        `;
+      } catch (e) {
+        $("inspector-body").innerHTML = `<p>ID: <code>${entity.id}</code></p><p>State: unavailable</p>`;
+      }
+    });
   }
 
   async function loadTrack() {
@@ -45,6 +67,29 @@
       viewer.dataSources.removeAll();
       await viewer.dataSources.add(Cesium.CzmlDataSource.load(r.czml));
       $("status").textContent = r.droppedSamples ? `${r.droppedSamples} samples dropped` : "";
+    } catch (e) { $("status").textContent = e.message; }
+  }
+
+  async function loadScene() {
+    $("status").textContent = "Composing scene…";
+    try {
+      const satId = $("sat").value;
+      const hours = Math.min(24, Math.max(0.5, (Number($("minutes").value) || 90) / 60));
+      const r = await api("/v1/scenes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          durationHours: hours,
+          stepSeconds: 60,
+          layers: [
+            { type: "groundtrack", satelliteId: satId, label: $("sat").selectedOptions[0]?.text },
+            { type: "passes", satelliteId: satId, observer: { lat: 40.0, lon: -105.0, altM: 1600 } }
+          ]
+        })
+      });
+      viewer.dataSources.removeAll();
+      await viewer.dataSources.add(Cesium.CzmlDataSource.load(r.czml));
+      $("status").textContent = `Scene composed (${r.layerCount} layers, ${r.droppedSamples} dropped)`;
     } catch (e) { $("status").textContent = e.message; }
   }
 
@@ -73,6 +118,8 @@
     if (t) enter(t);
   });
   $("load").addEventListener("click", loadTrack);
+  $("load-scene").addEventListener("click", loadScene);
+  $("inspector-close").addEventListener("click", () => { $("inspector").hidden = true; });
   $("logout").addEventListener("click", signOut);
   show(false);
 })();

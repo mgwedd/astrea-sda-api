@@ -1132,3 +1132,9 @@ Hence the CZML step is capped at 120 s. `tests/czml_tests.rs` keeps a regression
 - **Caps (reject, never clamp):** span $\le 24$ h, $\le 2000$ samples per track, step $\le 120$ s for CZML.
 - **Dropped samples:** instants where SGP4 fails or returns non-finite values are omitted and counted in `droppedSamples` (ground track). A gap shorter than the interpolation window degrades the local fit; the response does not mark where.
 - **Time scale:** timestamps are UTC as supplied; leap-second handling by Cesium is unverified.
+
+### 13.4 Composable Scenes (`POST /v1/scenes`)
+- **Multi-layer composition**: Aggregates heterogeneous layers (`groundtrack`, `passes`) into a single composed CZML document with a synchronized document `clock` interval spanning the full duration $[t_{start}, t_{end}]$.
+- **Layer Caps**: $\le 20$ layers per scene, duration $\le 24.0$ h, step $\le 120$ s, $\le 2000$ samples per track. Exceeding any cap returns HTTP 400 Bad Request before compute allocation.
+- **Compute Isolation**: Execution runs via `AstreaComputeEngine::run` on Rayon express/heavy pools with per-user concurrency quotas (`COMPUTE_JOB_QUOTA_BY_ROLE`) and bounded 5 s queue timeouts.
+- **Output Formats**: Default returns `SceneResponse` JSON containing `{ czml, droppedSamples, layerCount, start, end }`. Supplying query parameter `?format=czml` returns the raw CZML array with `Content-Type: application/vnd.cesium+json`.
