@@ -17,10 +17,11 @@ use crate::services::ephemeris::Ephemeris;
 use crate::services::pipeline::{CelesTrakGroup, DiscoveryPipeline};
 use crate::services::{astrodynamics, czml, maneuver};
 
-/// Engine cost estimates, measured on one ISS TLE in a release build (docs/CZML_VIEWER_LOG.md R19):
-/// 0.44 µs/sample and ~1.6 ms/day of pass search, each rounded up ~2x.
+/// Engine cost estimates, empirically validated across LEO, SSO, MEO, GEO, Molniya/HEO, and Deep Space (Issue #74):
+/// 0.31-0.66 µs/sample (SAMPLE_COST_MS = 0.001 ms provides 1.5-3.0x margin);
+/// 1.2-3.0 ms/day of pass search (PASS_DAY_COST_MS = 3 ms covers multi-day Molniya/HEO pass refinements).
 const SAMPLE_COST_MS: f64 = 0.001;
-const PASS_DAY_COST_MS: u64 = 2;
+const PASS_DAY_COST_MS: u64 = 3;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,

@@ -92,6 +92,9 @@ lint: ## Run cargo clippy lints with strict warning enforcement (-D warnings)
 test: ## Run full workspace test suite offline
 	cargo test --offline
 
+bench-views: ## Run empirical view compute cost benchmarks across orbit regimes
+	cargo test --test view_benchmarks_tests --release --offline -- --ignored --nocapture
+
 test-watch: ## Continuously run workspace test suite on source file changes
 	cargo watch -x 'test --offline'
 
