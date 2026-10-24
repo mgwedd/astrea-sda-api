@@ -74,6 +74,7 @@ pub struct TokenBucketLimiter {
     refill_rate: f64,
     key_prefix: String,
     script: redis::Script,
+    trust_forwarded_for: bool,
 }
 
 impl TokenBucketLimiter {
@@ -88,18 +89,33 @@ impl TokenBucketLimiter {
         refill_rate: f64,
         key_prefix: String,
     ) -> Self {
+        Self::with_trust(redis_conn, max_tokens, refill_rate, key_prefix, false)
+    }
+
+    /// Create a new token bucket limiter with explicit `trust_forwarded_for` configuration.
+    pub fn with_trust(
+        redis_conn: ConnectionManager,
+        max_tokens: u64,
+        refill_rate: f64,
+        key_prefix: String,
+        trust_forwarded_for: bool,
+    ) -> Self {
         Self {
             redis_conn,
             max_tokens,
             refill_rate,
             key_prefix,
             script: redis::Script::new(TOKEN_BUCKET_SCRIPT),
+            trust_forwarded_for,
         }
     }
 }
 
 #[async_trait]
 impl RateLimiter for TokenBucketLimiter {
+    fn trust_forwarded_for(&self) -> bool {
+        self.trust_forwarded_for
+    }
     async fn check(&self, key: &str) -> Result<RateLimitDecision, RateLimitError> {
         let redis_key = format!("{}tb:{}", self.key_prefix, key);
 

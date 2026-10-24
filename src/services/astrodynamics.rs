@@ -14,7 +14,7 @@ use crate::services::czml;
 use crate::services::ephemeris::{Ephemeris, Samples};
 use chrono::{DateTime, Utc};
 use rayon::prelude::*;
-use sgp4::{Constants, Elements, Prediction};
+use sgp4::Elements;
 use tokio_util::sync::CancellationToken;
 
 pub struct LookAngles {
@@ -34,6 +34,27 @@ pub fn normalize_tle_line(line: &str, expected_line_num: char) -> String {
     } else {
         trimmed
     }
+}
+
+/// Parses satellite TLE into SGP4 `Elements`.
+pub fn parse_satellite_elements(satellite: &Satellite) -> Result<Elements, AppError> {
+    parse_tle_elements_raw(
+        &satellite.name,
+        &satellite.tle.line_one,
+        &satellite.tle.line_two,
+    )
+}
+
+/// Parses raw TLE lines with normalization into SGP4 `Elements`.
+pub fn parse_tle_elements_raw(
+    name: &str,
+    line_one: &str,
+    line_two: &str,
+) -> Result<Elements, AppError> {
+    let line1 = normalize_tle_line(line_one, '1');
+    let line2 = normalize_tle_line(line_two, '2');
+    Elements::from_tle(Some(name.to_string()), line1.as_bytes(), line2.as_bytes())
+        .map_err(|e| AppError::Sgp4Error(format!("Failed to parse TLE: {:?}", e)))
 }
 
 /// Julian Date (UTC) from the Unix epoch, including sub-second precision
@@ -144,27 +165,19 @@ pub fn calculate_look_angles(
     alt: f64,
     time: DateTime<Utc>,
 ) -> Result<LookAngles, AppError> {
-    let line1 = normalize_tle_line(&satellite.tle.line_one, '1');
-    let line2 = normalize_tle_line(&satellite.tle.line_two, '2');
+    let ephem = Ephemeris::from_satellite(satellite)?;
+    calculate_look_angles_from_ephemeris(&ephem, lat, lon, alt, time)
+}
 
-    let elements = Elements::from_tle(
-        Some(satellite.name.clone()),
-        line1.as_bytes(),
-        line2.as_bytes(),
-    )
-    .map_err(|e| AppError::Sgp4Error(format!("Failed to parse TLE: {:?}", e)))?;
-
-    let constants = Constants::from_elements(&elements)
-        .map_err(|e| AppError::Sgp4Error(format!("Constants error: {:?}", e)))?;
-
-    // Convert elements.datetime (NaiveDateTime) to DateTime<Utc>
-    let epoch_dt = DateTime::<Utc>::from_naive_utc_and_offset(elements.datetime, Utc);
-    let minutes_since_epoch = (time - epoch_dt).num_milliseconds() as f64 / 60000.0;
-
-    let prediction: Prediction = constants
-        .propagate(minutes_since_epoch)
-        .map_err(|e| AppError::Sgp4Error(format!("SGP4 propagation error: {:?}", e)))?;
-
+/// SGP4 look-angles evaluation using an already instantiated `Ephemeris`
+pub fn calculate_look_angles_from_ephemeris(
+    ephem: &Ephemeris,
+    lat: f64,
+    lon: f64,
+    alt: f64,
+    time: DateTime<Utc>,
+) -> Result<LookAngles, AppError> {
+    let prediction = ephem.propagate(time)?;
     let lst = calculate_local_sidereal_time(time, 0.0);
     let sat_ecf = eci_to_ecf(prediction.position, lst);
     Ok(ecf_to_look_angles(lat, lon, alt / 1000.0, sat_ecf))
@@ -175,22 +188,9 @@ pub fn satellite_position_eci(
     satellite: &Satellite,
     time: DateTime<Utc>,
 ) -> Result<[f64; 3], AppError> {
-    let line1 = normalize_tle_line(&satellite.tle.line_one, '1');
-    let line2 = normalize_tle_line(&satellite.tle.line_two, '2');
-    let elements = Elements::from_tle(
-        Some(satellite.name.clone()),
-        line1.as_bytes(),
-        line2.as_bytes(),
-    )
-    .map_err(|e| AppError::Sgp4Error(format!("Failed to parse TLE: {:?}", e)))?;
-    let constants = Constants::from_elements(&elements)
-        .map_err(|e| AppError::Sgp4Error(format!("Constants error: {:?}", e)))?;
-    let epoch_dt = DateTime::<Utc>::from_naive_utc_and_offset(elements.datetime, Utc);
-    let minutes = (time - epoch_dt).num_milliseconds() as f64 / 60000.0;
-    constants
-        .propagate(minutes)
-        .map(|p| p.position)
-        .map_err(|e| AppError::Sgp4Error(format!("SGP4 propagation error: {:?}", e)))
+    let ephem = Ephemeris::from_satellite(satellite)?;
+    let prediction = ephem.propagate(time)?;
+    Ok(prediction.position)
 }
 
 /// Lambertian-sphere phase function Phi(gamma) = (sin g + (pi - g) cos g) / pi
@@ -288,17 +288,16 @@ pub fn find_next_visible_pass(
     elevation_threshold_deg: f64,
     search_duration_minutes: i64,
 ) -> Result<NextVisiblePassResponse, AppError> {
-    let elev = |t: DateTime<Utc>| {
-        calculate_look_angles(satellite, lat, lon, alt, t)
-            .map(|l| l.elevation)
-            .unwrap_or(f64::NEG_INFINITY)
+    let ephem = Ephemeris::from_satellite(satellite)?;
+    let elev = |t: DateTime<Utc>| -> Result<f64, AppError> {
+        calculate_look_angles_from_ephemeris(&ephem, lat, lon, alt, t).map(|l| l.elevation)
     };
     let at =
         |t0: DateTime<Utc>, secs: f64| t0 + chrono::Duration::milliseconds((secs * 1000.0) as i64);
 
     let step = 60.0;
     let mut prev_t = start_time;
-    let mut prev_e = elev(start_time);
+    let mut prev_e = elev(start_time)?;
     let mut aos_bracket = if prev_e >= elevation_threshold_deg {
         Some((start_time, start_time))
     } else {
@@ -308,25 +307,25 @@ pub fn find_next_visible_pass(
     let mut k = 1;
     while aos_bracket.is_none() && k <= search_duration_minutes {
         let t = start_time + chrono::Duration::minutes(k);
-        let e = elev(t);
+        let e = elev(t)?;
         if e >= elevation_threshold_deg {
             aos_bracket = Some((prev_t, t));
         } else {
             // A short pass can rise above the threshold and set again between samples.
-            let next_e = elev(t + chrono::Duration::minutes(1));
+            let next_e = elev(t + chrono::Duration::minutes(1))?;
             if e >= prev_e && e >= next_e {
                 let (mut lo, mut hi) = (-step, step);
                 while hi - lo > 1.0 {
                     let m1 = hi - 0.618_033_988_75 * (hi - lo);
                     let m2 = lo + 0.618_033_988_75 * (hi - lo);
-                    if elev(at(t, m1)) > elev(at(t, m2)) {
+                    if elev(at(t, m1))? > elev(at(t, m2))? {
                         hi = m2
                     } else {
                         lo = m1
                     }
                 }
                 let peak_t = at(t, (lo + hi) / 2.0);
-                if elev(peak_t) >= elevation_threshold_deg {
+                if elev(peak_t)? >= elevation_threshold_deg {
                     aos_bracket = Some((prev_t.max(at(t, -step)), peak_t));
                 }
             }
@@ -339,14 +338,14 @@ pub fn find_next_visible_pass(
     let (mut below, mut above) = aos_bracket.ok_or(AppError::NotFound)?;
     while (above - below).num_milliseconds() > 1000 {
         let mid = below + (above - below) / 2;
-        if elev(mid) >= elevation_threshold_deg {
+        if elev(mid)? >= elevation_threshold_deg {
             above = mid
         } else {
             below = mid
         }
     }
 
-    let look = calculate_look_angles(satellite, lat, lon, alt, above)?;
+    let look = calculate_look_angles_from_ephemeris(&ephem, lat, lon, alt, above)?;
     Ok(NextVisiblePassResponse {
         satellite_id: satellite.id,
         satellite_name: satellite.name.clone(),
@@ -703,25 +702,8 @@ pub fn calculate_illumination(
     alt: f64,
     time: DateTime<Utc>,
 ) -> Result<IlluminationResponse, AppError> {
-    let line1 = normalize_tle_line(&satellite.tle.line_one, '1');
-    let line2 = normalize_tle_line(&satellite.tle.line_two, '2');
-
-    let elements = Elements::from_tle(
-        Some(satellite.name.clone()),
-        line1.as_bytes(),
-        line2.as_bytes(),
-    )
-    .map_err(|e| AppError::Sgp4Error(format!("Failed to parse TLE: {:?}", e)))?;
-
-    let constants = Constants::from_elements(&elements)
-        .map_err(|e| AppError::Sgp4Error(format!("Constants error: {:?}", e)))?;
-
-    let epoch_dt = DateTime::<Utc>::from_naive_utc_and_offset(elements.datetime, Utc);
-    let minutes_since_epoch = (time - epoch_dt).num_milliseconds() as f64 / 60000.0;
-
-    let prediction = constants
-        .propagate(minutes_since_epoch)
-        .map_err(|e| AppError::Sgp4Error(format!("SGP4 propagation error: {:?}", e)))?;
+    let ephem = Ephemeris::from_satellite(satellite)?;
+    let prediction = ephem.propagate(time)?;
 
     let sat_eci = prediction.position;
     let sun_eci = calculate_sun_position_eci(time);
@@ -877,27 +859,8 @@ pub fn find_conjunctions(
     let matches: Vec<ConjunctionMatch> = pairs
         .par_iter()
         .filter_map(|(sat_a, sat_b)| {
-            let line1_a = normalize_tle_line(&sat_a.tle.line_one, '1');
-            let line2_a = normalize_tle_line(&sat_a.tle.line_two, '2');
-            let elem_a = Elements::from_tle(
-                Some(sat_a.name.clone()),
-                line1_a.as_bytes(),
-                line2_a.as_bytes(),
-            )
-            .ok()?;
-            let const_a = Constants::from_elements(&elem_a).ok()?;
-            let epoch_a = DateTime::<Utc>::from_naive_utc_and_offset(elem_a.datetime, Utc);
-
-            let line1_b = normalize_tle_line(&sat_b.tle.line_one, '1');
-            let line2_b = normalize_tle_line(&sat_b.tle.line_two, '2');
-            let elem_b = Elements::from_tle(
-                Some(sat_b.name.clone()),
-                line1_b.as_bytes(),
-                line2_b.as_bytes(),
-            )
-            .ok()?;
-            let const_b = Constants::from_elements(&elem_b).ok()?;
-            let epoch_b = DateTime::<Utc>::from_naive_utc_and_offset(elem_b.datetime, Utc);
+            let ephem_a = Ephemeris::from_satellite(sat_a).ok()?;
+            let ephem_b = Ephemeris::from_satellite(sat_b).ok()?;
 
             let mut min_dist_km = f64::MAX;
             let mut closest_time = start_time;
@@ -906,12 +869,11 @@ pub fn find_conjunctions(
 
             for step in 0..=total_steps {
                 let current_time = start_time + chrono::Duration::minutes(step * step_mins);
-                let mins_a = (current_time - epoch_a).num_milliseconds() as f64 / 60000.0;
-                let mins_b = (current_time - epoch_b).num_milliseconds() as f64 / 60000.0;
 
-                if let (Ok(pred_a), Ok(pred_b)) =
-                    (const_a.propagate(mins_a), const_b.propagate(mins_b))
-                {
+                if let (Ok(pred_a), Ok(pred_b)) = (
+                    ephem_a.propagate(current_time),
+                    ephem_b.propagate(current_time),
+                ) {
                     let dx = pred_a.position[0] - pred_b.position[0];
                     let dy = pred_a.position[1] - pred_b.position[1];
                     let dz = pred_a.position[2] - pred_b.position[2];
@@ -933,12 +895,8 @@ pub fn find_conjunctions(
             let dist_at = |mins_from_start: f64| -> Option<(f64, f64)> {
                 let ms = (mins_from_start * 60000.0) as i64;
                 let t = start_time + chrono::Duration::milliseconds(ms);
-                let pa = const_a
-                    .propagate((t - epoch_a).num_milliseconds() as f64 / 60000.0)
-                    .ok()?;
-                let pb = const_b
-                    .propagate((t - epoch_b).num_milliseconds() as f64 / 60000.0)
-                    .ok()?;
+                let pa = ephem_a.propagate(t).ok()?;
+                let pb = ephem_b.propagate(t).ok()?;
                 let d = (0..3)
                     .map(|k| (pa.position[k] - pb.position[k]).powi(2))
                     .sum::<f64>();
@@ -1047,25 +1005,8 @@ pub fn calculate_doppler_shift(
     time: DateTime<Utc>,
     relativistic: bool,
 ) -> Result<DopplerResponse, AppError> {
-    let line1 = normalize_tle_line(&satellite.tle.line_one, '1');
-    let line2 = normalize_tle_line(&satellite.tle.line_two, '2');
-
-    let elements = Elements::from_tle(
-        Some(satellite.name.clone()),
-        line1.as_bytes(),
-        line2.as_bytes(),
-    )
-    .map_err(|e| AppError::Sgp4Error(format!("Failed to parse TLE: {:?}", e)))?;
-
-    let constants = Constants::from_elements(&elements)
-        .map_err(|e| AppError::Sgp4Error(format!("Constants error: {:?}", e)))?;
-
-    let epoch_dt = DateTime::<Utc>::from_naive_utc_and_offset(elements.datetime, Utc);
-    let minutes_since_epoch = (time - epoch_dt).num_milliseconds() as f64 / 60000.0;
-
-    let prediction: Prediction = constants
-        .propagate(minutes_since_epoch)
-        .map_err(|e| AppError::Sgp4Error(format!("SGP4 propagation error: {:?}", e)))?;
+    let ephem = Ephemeris::from_satellite(satellite)?;
+    let prediction = ephem.propagate(time)?;
 
     let lst = calculate_local_sidereal_time(time, 0.0);
     let sat_ecf = eci_to_ecf(prediction.position, lst);
@@ -1184,28 +1125,15 @@ pub fn find_transits(
         .par_iter()
         .flat_map(|sat| {
             let mut matches = Vec::new();
-            let line1 = normalize_tle_line(&sat.tle.line_one, '1');
-            let line2 = normalize_tle_line(&sat.tle.line_two, '2');
-
-            let elements = match Elements::from_tle(
-                Some(sat.name.clone()),
-                line1.as_bytes(),
-                line2.as_bytes(),
-            ) {
+            let ephem = match Ephemeris::from_satellite(sat) {
                 Ok(e) => e,
                 Err(_) => return matches,
             };
-            let constants = match Constants::from_elements(&elements) {
-                Ok(c) => c,
-                Err(_) => return matches,
-            };
-            let epoch_dt = DateTime::<Utc>::from_naive_utc_and_offset(elements.datetime, Utc);
 
             // Angular separation (deg) and target elevation (deg) at `t`; None when SGP4 fails or
             // either body is below the horizon.
             let sample = |t: DateTime<Utc>| -> Option<(f64, f64)> {
-                let minutes_since_epoch = (t - epoch_dt).num_milliseconds() as f64 / 60000.0;
-                let prediction = constants.propagate(minutes_since_epoch).ok()?;
+                let prediction = ephem.propagate(t).ok()?;
                 let gmst = calculate_local_sidereal_time(t, 0.0);
                 let sat_look =
                     ecf_to_look_angles(lat, lon, alt_km, eci_to_ecf(prediction.position, gmst));
@@ -1345,10 +1273,9 @@ pub fn find_pass_schedule(
     let total_minutes = (days * 24 * 60) as i64;
     let threshold = elevation_threshold_deg.clamp(-10.0, 89.0);
 
-    let elev = |t: DateTime<Utc>| {
-        calculate_look_angles(satellite, lat, lon, alt_m, t)
-            .map(|l| l.elevation)
-            .unwrap_or(f64::NEG_INFINITY)
+    let ephem = Ephemeris::from_satellite(satellite)?;
+    let elev = |t: DateTime<Utc>| -> Result<f64, AppError> {
+        calculate_look_angles_from_ephemeris(&ephem, lat, lon, alt_m, t).map(|l| l.elevation)
     };
 
     let mut passes = Vec::new();
@@ -1360,7 +1287,7 @@ pub fn find_pass_schedule(
             return Err(crate::services::ephemeris::cancelled());
         }
         let t_curr = start_time + chrono::Duration::minutes(k);
-        let e_curr = elev(t_curr);
+        let e_curr = elev(t_curr)?;
 
         if e_curr >= threshold {
             // Find AOS (crossing threshold from below)
@@ -1371,7 +1298,7 @@ pub fn find_pass_schedule(
             } else {
                 while (above - below).num_milliseconds() > 1000 {
                     let mid = below + (above - below) / 2;
-                    if elev(mid) >= threshold {
+                    if elev(mid)? >= threshold {
                         above = mid;
                     } else {
                         below = mid;
@@ -1380,7 +1307,7 @@ pub fn find_pass_schedule(
                 above
             };
 
-            let aos_look = calculate_look_angles(satellite, lat, lon, alt_m, aos_time)?;
+            let aos_look = calculate_look_angles_from_ephemeris(&ephem, lat, lon, alt_m, aos_time)?;
 
             // Trace forward to find LOS (crossing threshold back below)
             let mut t_scan = t_curr + chrono::Duration::minutes(1);
@@ -1388,7 +1315,7 @@ pub fn find_pass_schedule(
             let mut peak_elev = e_curr;
 
             while k < total_minutes {
-                let e_scan = elev(t_scan);
+                let e_scan = elev(t_scan)?;
                 if e_scan > peak_elev {
                     peak_elev = e_scan;
                     peak_time = t_scan;
@@ -1407,7 +1334,7 @@ pub fn find_pass_schedule(
                 let mut los_below = t_scan;
                 while (los_below - los_above).num_milliseconds() > 1000 {
                     let mid = los_above + (los_below - los_above) / 2;
-                    if elev(mid) >= threshold {
+                    if elev(mid)? >= threshold {
                         los_above = mid;
                     } else {
                         los_below = mid;
@@ -1433,15 +1360,15 @@ pub fn find_pass_schedule(
                 let diff_ms = (hi_t - lo_t).num_milliseconds() as f64;
                 let m1 = hi_t - chrono::Duration::milliseconds((gr * diff_ms) as i64);
                 let m2 = lo_t + chrono::Duration::milliseconds((gr * diff_ms) as i64);
-                if elev(m1) > elev(m2) {
+                if elev(m1)? > elev(m2)? {
                     hi_t = m2;
                 } else {
                     lo_t = m1;
                 }
             }
             let tca_time = lo_t + (hi_t - lo_t) / 2;
-            let tca_look = calculate_look_angles(satellite, lat, lon, alt_m, tca_time)?;
-            let los_look = calculate_look_angles(satellite, lat, lon, alt_m, los_time)?;
+            let tca_look = calculate_look_angles_from_ephemeris(&ephem, lat, lon, alt_m, tca_time)?;
+            let los_look = calculate_look_angles_from_ephemeris(&ephem, lat, lon, alt_m, los_time)?;
 
             let duration_sec = (los_time - aos_time).num_milliseconds() as f64 / 1000.0;
 
@@ -1452,7 +1379,7 @@ pub fn find_pass_schedule(
             };
 
             let visual_magnitude = if is_visible {
-                let sat_eci = satellite_position_eci(satellite, tca_time)?;
+                let sat_eci = ephem.propagate(tca_time)?.position;
                 let gamma = phase_angle_rad(
                     sat_eci,
                     observer_position_eci(lat, lon, alt_m / 1000.0, tca_time),
@@ -1510,40 +1437,12 @@ pub fn calculate_relative_motion(
     duration_minutes: usize,
     step_seconds: usize,
 ) -> Result<RelativeMotionResponse, AppError> {
-    let line1_p = normalize_tle_line(&primary.tle.line_one, '1');
-    let line2_p = normalize_tle_line(&primary.tle.line_two, '2');
-    let elem_p = Elements::from_tle(
-        Some(primary.name.clone()),
-        line1_p.as_bytes(),
-        line2_p.as_bytes(),
-    )
-    .map_err(|e| AppError::Sgp4Error(format!("Failed to parse primary TLE: {:?}", e)))?;
-    let const_p = Constants::from_elements(&elem_p)
-        .map_err(|e| AppError::Sgp4Error(format!("Primary constants error: {:?}", e)))?;
-    let epoch_p = DateTime::<Utc>::from_naive_utc_and_offset(elem_p.datetime, Utc);
-
-    let line1_t = normalize_tle_line(&target.tle.line_one, '1');
-    let line2_t = normalize_tle_line(&target.tle.line_two, '2');
-    let elem_t = Elements::from_tle(
-        Some(target.name.clone()),
-        line1_t.as_bytes(),
-        line2_t.as_bytes(),
-    )
-    .map_err(|e| AppError::Sgp4Error(format!("Failed to parse target TLE: {:?}", e)))?;
-    let const_t = Constants::from_elements(&elem_t)
-        .map_err(|e| AppError::Sgp4Error(format!("Target constants error: {:?}", e)))?;
-    let epoch_t = DateTime::<Utc>::from_naive_utc_and_offset(elem_t.datetime, Utc);
+    let ephem_p = Ephemeris::from_satellite(primary)?;
+    let ephem_t = Ephemeris::from_satellite(target)?;
 
     let compute_pt = |t: DateTime<Utc>| -> Result<(RelativeMotionPoint, [f64; 3]), AppError> {
-        let dt_p = (t - epoch_p).num_milliseconds() as f64 / 60000.0;
-        let dt_t = (t - epoch_t).num_milliseconds() as f64 / 60000.0;
-
-        let pred_p = const_p
-            .propagate(dt_p)
-            .map_err(|e| AppError::Sgp4Error(format!("Primary SGP4 error: {:?}", e)))?;
-        let pred_t = const_t
-            .propagate(dt_t)
-            .map_err(|e| AppError::Sgp4Error(format!("Target SGP4 error: {:?}", e)))?;
+        let pred_p = ephem_p.propagate(t)?;
+        let pred_t = ephem_t.propagate(t)?;
 
         let rp = pred_p.position;
         let vp = pred_p.velocity;
@@ -1826,25 +1725,8 @@ pub fn calculate_satellite_state(
     satellite: &Satellite,
     epoch: DateTime<Utc>,
 ) -> Result<SatelliteStateResponse, AppError> {
-    let line1 = normalize_tle_line(&satellite.tle.line_one, '1');
-    let line2 = normalize_tle_line(&satellite.tle.line_two, '2');
-
-    let elements = Elements::from_tle(
-        Some(satellite.name.clone()),
-        line1.as_bytes(),
-        line2.as_bytes(),
-    )
-    .map_err(|e| AppError::Sgp4Error(format!("Failed to parse TLE: {:?}", e)))?;
-
-    let constants = Constants::from_elements(&elements)
-        .map_err(|e| AppError::Sgp4Error(format!("Constants error: {:?}", e)))?;
-
-    let epoch_dt = DateTime::<Utc>::from_naive_utc_and_offset(elements.datetime, Utc);
-    let minutes_since_epoch = (epoch - epoch_dt).num_milliseconds() as f64 / 60000.0;
-
-    let prediction = constants
-        .propagate(minutes_since_epoch)
-        .map_err(|e| AppError::Sgp4Error(format!("SGP4 propagation error: {:?}", e)))?;
+    let ephem = Ephemeris::from_satellite(satellite)?;
+    let prediction = ephem.propagate(epoch)?;
 
     let pos_eci = prediction.position;
     let vel_eci = prediction.velocity;
@@ -1903,15 +1785,7 @@ pub fn calculate_satellite_state(
 
 /// Evaluates atmospheric drag decay rate, perigee altitude, and re-entry risk for a satellite
 pub fn calculate_decay_risk(satellite: &Satellite) -> Result<SatelliteDecayRiskResponse, AppError> {
-    let line1 = normalize_tle_line(&satellite.tle.line_one, '1');
-    let line2 = normalize_tle_line(&satellite.tle.line_two, '2');
-
-    let elements = Elements::from_tle(
-        Some(satellite.name.clone()),
-        line1.as_bytes(),
-        line2.as_bytes(),
-    )
-    .map_err(|e| AppError::Sgp4Error(format!("Failed to parse TLE: {:?}", e)))?;
+    let elements = parse_satellite_elements(satellite)?;
 
     let semi_major_axis = brouwer_mean_semi_major_axis_km(&elements);
 

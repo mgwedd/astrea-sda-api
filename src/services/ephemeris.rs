@@ -5,7 +5,6 @@ use crate::error::AppError;
 use crate::models::{GroundTrackPoint, Satellite};
 use crate::services::astrodynamics::{
     calculate_local_sidereal_time, ecf_to_geodetic, eci_to_ecf, eci_to_ecf_velocity,
-    normalize_tle_line,
 };
 use chrono::{DateTime, Duration, Utc};
 use sgp4::{Constants, Elements};
@@ -23,6 +22,7 @@ pub fn cancelled() -> AppError {
 
 pub struct Ephemeris {
     constants: Constants,
+    elements: Elements,
     epoch: DateTime<Utc>,
     pub mean_motion_revs_day: f64,
 }
@@ -35,27 +35,40 @@ pub struct Samples {
 
 impl Ephemeris {
     pub fn from_satellite(satellite: &Satellite) -> Result<Self, AppError> {
-        let line1 = normalize_tle_line(&satellite.tle.line_one, '1');
-        let line2 = normalize_tle_line(&satellite.tle.line_two, '2');
-        let elements = Elements::from_tle(
-            Some(satellite.name.clone()),
-            line1.as_bytes(),
-            line2.as_bytes(),
-        )
-        .map_err(|e| AppError::Sgp4Error(format!("Failed to parse TLE: {:?}", e)))?;
+        let elements = crate::services::astrodynamics::parse_satellite_elements(satellite)?;
         let constants = Constants::from_elements(&elements)
             .map_err(|e| AppError::Sgp4Error(format!("Constants error: {:?}", e)))?;
         Ok(Self {
             constants,
             epoch: DateTime::<Utc>::from_naive_utc_and_offset(elements.datetime, Utc),
             mean_motion_revs_day: elements.mean_motion,
+            elements,
         })
+    }
+
+    pub fn constants(&self) -> &Constants {
+        &self.constants
+    }
+
+    pub fn elements(&self) -> &Elements {
+        &self.elements
+    }
+
+    pub fn epoch(&self) -> DateTime<Utc> {
+        self.epoch
+    }
+
+    /// Propagates the orbit to timestamp `t`.
+    pub fn propagate(&self, t: DateTime<Utc>) -> Result<sgp4::Prediction, AppError> {
+        let minutes = (t - self.epoch).num_milliseconds() as f64 / 60000.0;
+        self.constants
+            .propagate(minutes)
+            .map_err(|e| AppError::Sgp4Error(format!("SGP4 propagation error: {:?}", e)))
     }
 
     /// State at `t`, or `None` if SGP4 fails or yields a non-finite value.
     pub fn at(&self, t: DateTime<Utc>) -> Option<GroundTrackPoint> {
-        let minutes = (t - self.epoch).num_milliseconds() as f64 / 60000.0;
-        let pred = self.constants.propagate(minutes).ok()?;
+        let pred = self.propagate(t).ok()?;
         let lst = calculate_local_sidereal_time(t, 0.0);
         let pos = eci_to_ecf(pred.position, lst);
         let vel = eci_to_ecf_velocity(pred.position, pred.velocity, lst);
