@@ -417,3 +417,54 @@ fn quota_role_uses_the_same_aliases_as_role_level() {
     let q = RoleQuota::parse("default=5,admin=50").unwrap();
     assert_eq!(q.for_role(&claims("superuser").canonical_role()), 50);
 }
+
+#[tokio::test]
+async fn routed_handlers_return_4xx_on_invalid_inputs_not_500() {
+    use astrea_sda_api::{create_router, repository::SatelliteRepository};
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    use uuid::Uuid;
+
+    let app = create_router(SatelliteRepository::new(None).await);
+
+    // Login as admin
+    let login_req = Request::builder()
+        .method("POST")
+        .uri("/v1/auth/login")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({"email": "admin@astrea.local", "password": "password123"})
+                .to_string(),
+        ))
+        .unwrap();
+    let res = app.clone().oneshot(login_req).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let token = serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let missing_id = Uuid::new_v4();
+    let missing_id2 = Uuid::new_v4();
+
+    // Endpoints routed through compute engine must return 404 on missing satellite, not 500:
+    for uri in [
+        format!("/v1/satellites/{missing_id}/state"),
+        format!("/v1/satellites/{missing_id}/decay-risk"),
+        format!("/v1/satellites/{missing_id}/illumination?lat=40&lon=-75"),
+        format!("/v1/satellites/{missing_id}/doppler?center_freq_hz=437500000&lat=40&lon=-75"),
+        format!("/v1/satellites/{missing_id}/relative-motion?target_id={missing_id2}"),
+        format!("/v1/satellites/{missing_id}/next-visible?lat=40&lon=-75"),
+    ] {
+        let req = Request::builder()
+            .method("GET")
+            .uri(&uri)
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status().as_u16(), 404, "URI: {uri}");
+    }
+}
