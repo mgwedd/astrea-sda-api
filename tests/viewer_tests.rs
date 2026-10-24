@@ -70,8 +70,104 @@ fn token_is_never_persisted_by_the_client() {
         "sessionStorage",
         "document.cookie",
         "location.search",
-        "location.hash",
     ] {
         assert!(!js.contains(banned), "app.js must not use {banned}");
     }
+}
+
+#[test]
+fn deep_link_hash_never_encodes_auth_tokens_or_observer_coordinates() {
+    let js = include_str!("../viewer/app.js");
+
+    // location.hash is supported exclusively for #scene= deep links
+    assert!(
+        js.contains("location.hash"),
+        "app.js must support #scene= hash deep linking"
+    );
+    assert!(
+        js.contains("#scene="),
+        "app.js must use #scene= prefix for deep linking"
+    );
+
+    // Strict security rule: tokens must NEVER be placed in the hash or storage
+    assert!(
+        !js.contains("location.hash = token"),
+        "token must never be assigned to location.hash"
+    );
+    assert!(
+        !js.contains("location.hash = `Bearer"),
+        "Bearer token must never be in location.hash"
+    );
+    assert!(
+        !js.contains("location.hash = 'Bearer"),
+        "Bearer token must never be in location.hash"
+    );
+
+    // Sanitization must explicitly strip token/auth keys and observer coordinates
+    assert!(
+        js.contains("sanitizeSceneConfig"),
+        "app.js must sanitize scene configurations"
+    );
+    for banned_key in [
+        "token", "auth", "jwt", "password", "observer", "lat", "lon", "altm",
+    ] {
+        assert!(
+            js.contains(banned_key),
+            "sanitizer in app.js must handle {banned_key}"
+        );
+    }
+}
+
+#[test]
+fn compare_mode_ui_and_color_differentiation_are_present() {
+    let html = include_str!("../viewer/index.html");
+    let css = include_str!("../viewer/app.css");
+    let js = include_str!("../viewer/app.js");
+
+    // UI elements in index.html
+    assert!(
+        html.contains("id=\"compare-mode\""),
+        "index.html must have compare-mode checkbox"
+    );
+    assert!(
+        html.contains("id=\"sat-b\""),
+        "index.html must have sat-b comparison selector"
+    );
+    assert!(
+        html.contains("id=\"layer-type\""),
+        "index.html must have layer-type selector"
+    );
+    assert!(
+        html.contains("id=\"share-link\""),
+        "index.html must have share-link button"
+    );
+    assert!(
+        html.contains("id=\"compare-legend\""),
+        "index.html must have compare legend"
+    );
+
+    // Differentiated color schemes in css and js
+    // Scene A: Cyan (#00e5ff / [0, 229, 255, 255])
+    // Scene B: Amber / Neon Orange (#ff9100 / [255, 145, 0, 255])
+    assert!(css.contains("#00e5ff"), "css must style Scene A in Cyan");
+    assert!(
+        css.contains("#ff9100"),
+        "css must style Scene B in Amber/Orange"
+    );
+    assert!(
+        js.contains("255, 145, 0, 255"),
+        "js must color Scene B entities in Orange"
+    );
+    assert!(
+        js.contains("0, 229, 255, 255"),
+        "js must color Scene A entities in Cyan"
+    );
+
+    // Entity collision prevention
+    assert!(
+        js.contains("compare_"),
+        "js must namespace comparison packet IDs to avoid entity collision"
+    );
+    assert!(js.contains("[A]"), "js must badge Scene A entities");
+    assert!(js.contains("[B]"), "js must badge Scene B entities");
 }
