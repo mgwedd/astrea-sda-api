@@ -12,7 +12,7 @@ use crate::models::{
 };
 use crate::pagination::{PaginatedResponse, PaginationQuery};
 use crate::repository::SatelliteRepository;
-use crate::services::compute::error_status;
+use crate::services::compute::{error_status, AstreaComputeEngine};
 use crate::services::ephemeris::Ephemeris;
 use crate::services::pipeline::{CelesTrakGroup, DiscoveryPipeline};
 use crate::services::{astrodynamics, czml, maneuver};
@@ -468,22 +468,27 @@ pub async fn get_overhead(
         time.timestamp_millis()
     );
 
+    let engine = repo.compute.clone();
+    let (user_id, role) = (claims.sub.clone(), claims.canonical_role());
+    let est_cost_ms = ((satellites.len() as f64 * SAMPLE_COST_MS).ceil() as u64).max(1);
+
     let res = repo
         .cache
         .get_or_insert_with(&cache_key, || async move {
-            let overhead_res = tokio::task::spawn_blocking(move || {
-                astrodynamics::find_overhead_satellite(
-                    &satellites,
-                    params.lat,
-                    params.lon,
-                    alt,
-                    time,
-                )
-            })
-            .await
-            .map_err(|e| e.to_string())?;
+            let overhead_res = engine
+                .run(est_cost_ms, user_id, role, move |_cancel| {
+                    astrodynamics::find_overhead_satellite(
+                        &satellites,
+                        params.lat,
+                        params.lon,
+                        alt,
+                        time,
+                    )
+                    .ok_or_else(|| "No satellite overhead found".to_string())
+                })
+                .await?;
 
-            overhead_res.ok_or_else(|| "No satellite overhead found".to_string())
+            overhead_res
         })
         .await
         .map_err(map_calculation_error)?;
@@ -528,16 +533,20 @@ pub async fn get_next_visible(
         id, params.lat, params.lon, alt, threshold, time_bucket
     );
 
+    let engine = repo.compute.clone();
+    let (user_id, role) = (claims.sub.clone(), claims.canonical_role());
+    let est_cost_ms = PASS_DAY_COST_MS;
+
     let res = repo
         .cache
         .get_or_insert_with(&cache_key, || async move {
-            let pass_res = tokio::task::spawn_blocking(move || {
-                astrodynamics::find_next_visible_pass(
-                    &satellite, params.lat, params.lon, alt, start_time, threshold, 1440,
-                )
-            })
-            .await
-            .map_err(|e| e.to_string())?;
+            let pass_res = engine
+                .run(est_cost_ms, user_id, role, move |_cancel| {
+                    astrodynamics::find_next_visible_pass(
+                        &satellite, params.lat, params.lon, alt, start_time, threshold, 1440,
+                    )
+                })
+                .await?;
 
             pass_res.map_err(|e| e.to_string())
         })
@@ -688,15 +697,20 @@ pub async fn get_satellite_illumination(
         time.timestamp_millis()
     );
 
+    let engine = repo.compute.clone();
+    let (user_id, role) = (claims.sub.clone(), claims.canonical_role());
+
     let res = repo
         .cache
         .get_or_insert_with(&cache_key, || async move {
             let sat_clone = satellite.clone();
-            let illum_res = tokio::task::spawn_blocking(move || {
-                astrodynamics::calculate_illumination(&sat_clone, params.lat, params.lon, alt, time)
-            })
-            .await
-            .map_err(|e| e.to_string())?;
+            let illum_res = engine
+                .run(1, user_id, role, move |_cancel| {
+                    astrodynamics::calculate_illumination(
+                        &sat_clone, params.lat, params.lon, alt, time,
+                    )
+                })
+                .await?;
 
             illum_res.map_err(|e| e.to_string())
         })
@@ -750,24 +764,40 @@ pub async fn search_conjunctions(
         time_bucket
     );
 
+    let engine = repo.compute.clone();
+    let (user_id, role) = (claims.sub.clone(), claims.canonical_role());
+    let est_cost_ms = AstreaComputeEngine::estimate_complexity(
+        satellites.len(),
+        duration_hours as f64 / 24.0,
+        60.0,
+    )
+    .map_err(|(status, msg)| {
+        if status == StatusCode::BAD_REQUEST {
+            AppError::BadRequest(msg)
+        } else {
+            AppError::InternalServerError(msg)
+        }
+    })?
+    .max(1);
+
     let res = repo
         .cache
         .get_or_insert_with(&cache_key, || async move {
-            let conjunction_res = tokio::task::spawn_blocking(move || {
-                astrodynamics::find_conjunctions(
-                    &satellites,
-                    start_time,
-                    max_distance_km,
-                    duration_hours,
-                )
-            })
-            .await
-            .map_err(|e| e.to_string())?;
+            let conjunction_res = engine
+                .run(est_cost_ms, user_id, role, move |_cancel| {
+                    Ok::<_, String>(astrodynamics::find_conjunctions(
+                        &satellites,
+                        start_time,
+                        max_distance_km,
+                        duration_hours,
+                    ))
+                })
+                .await?;
 
-            Ok(conjunction_res)
+            conjunction_res
         })
         .await
-        .map_err(AppError::InternalServerError)?;
+        .map_err(map_calculation_error)?;
 
     Ok(Json(res))
 }
@@ -832,23 +862,26 @@ pub async fn get_satellite_doppler(
         relativistic
     );
 
+    let engine = repo.compute.clone();
+    let (user_id, role) = (claims.sub.clone(), claims.canonical_role());
+
     let res = repo
         .cache
         .get_or_insert_with(&cache_key, || async move {
             let sat_clone = satellite.clone();
-            let doppler_res = tokio::task::spawn_blocking(move || {
-                astrodynamics::calculate_doppler_shift(
-                    &sat_clone,
-                    params.center_freq_hz,
-                    params.lat,
-                    params.lon,
-                    alt_km,
-                    time,
-                    relativistic,
-                )
-            })
-            .await
-            .map_err(|e| e.to_string())?;
+            let doppler_res = engine
+                .run(1, user_id, role, move |_cancel| {
+                    astrodynamics::calculate_doppler_shift(
+                        &sat_clone,
+                        params.center_freq_hz,
+                        params.lat,
+                        params.lon,
+                        alt_km,
+                        time,
+                        relativistic,
+                    )
+                })
+                .await?;
 
             doppler_res.map_err(|e| e.to_string())
         })
@@ -969,20 +1002,27 @@ pub async fn get_solar_transits(
     let days = params.duration_days.unwrap_or(7).min(30);
     let max_sep = params.max_angular_separation_deg.unwrap_or(0.5);
 
-    let res = tokio::task::spawn_blocking(move || {
-        astrodynamics::find_transits(
-            TransitTarget::Sun,
-            &satellites,
-            params.lat,
-            params.lon,
-            alt_km,
-            start_time,
-            days,
-            max_sep,
-        )
-    })
-    .await
-    .map_err(|e| AppError::InternalServerError(e.to_string()))??;
+    let engine = repo.compute.clone();
+    let (user_id, role) = (claims.sub.clone(), claims.canonical_role());
+    let est_cost_ms = (satellites.len() as u64 * days as u64 * 2).max(1);
+
+    let res = engine
+        .run(est_cost_ms, user_id, role, move |_cancel| {
+            astrodynamics::find_transits(
+                TransitTarget::Sun,
+                &satellites,
+                params.lat,
+                params.lon,
+                alt_km,
+                start_time,
+                days,
+                max_sep,
+            )
+            .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(map_calculation_error)?
+        .map_err(map_calculation_error)?;
 
     Ok(Json(res))
 }
@@ -1015,20 +1055,27 @@ pub async fn get_lunar_transits(
     let days = params.duration_days.unwrap_or(7).min(30);
     let max_sep = params.max_angular_separation_deg.unwrap_or(0.5);
 
-    let res = tokio::task::spawn_blocking(move || {
-        astrodynamics::find_transits(
-            TransitTarget::Moon,
-            &satellites,
-            params.lat,
-            params.lon,
-            alt_km,
-            start_time,
-            days,
-            max_sep,
-        )
-    })
-    .await
-    .map_err(|e| AppError::InternalServerError(e.to_string()))??;
+    let engine = repo.compute.clone();
+    let (user_id, role) = (claims.sub.clone(), claims.canonical_role());
+    let est_cost_ms = (satellites.len() as u64 * days as u64 * 2).max(1);
+
+    let res = engine
+        .run(est_cost_ms, user_id, role, move |_cancel| {
+            astrodynamics::find_transits(
+                TransitTarget::Moon,
+                &satellites,
+                params.lat,
+                params.lon,
+                alt_km,
+                start_time,
+                days,
+                max_sep,
+            )
+            .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(map_calculation_error)?
+        .map_err(map_calculation_error)?;
 
     Ok(Json(res))
 }
@@ -1168,18 +1215,27 @@ pub async fn get_relative_motion(
         epoch.timestamp_millis()
     );
 
+    let engine = repo.compute.clone();
+    let (user_id, role) = (claims.sub.clone(), claims.canonical_role());
+    let samples = if dur_mins > 0 && step_secs > 0 {
+        (dur_mins * 60) / step_secs
+    } else {
+        1
+    };
+    let est_cost_ms = ((samples as f64 * SAMPLE_COST_MS * 2.0).ceil() as u64).max(1);
+
     let res = repo
         .cache
         .get_or_insert_with(&cache_key, || async move {
             let p_clone = primary.clone();
             let t_clone = target.clone();
-            let motion_res = tokio::task::spawn_blocking(move || {
-                astrodynamics::calculate_relative_motion(
-                    &p_clone, &t_clone, epoch, dur_mins, step_secs,
-                )
-            })
-            .await
-            .map_err(|e| e.to_string())?;
+            let motion_res = engine
+                .run(est_cost_ms, user_id, role, move |_cancel| {
+                    astrodynamics::calculate_relative_motion(
+                        &p_clone, &t_clone, epoch, dur_mins, step_secs,
+                    )
+                })
+                .await?;
 
             motion_res.map_err(|e| e.to_string())
         })
@@ -1220,15 +1276,18 @@ pub async fn get_satellite_state(
 
     let cache_key = format!("state:{}:{}", id, epoch.timestamp_millis());
 
+    let engine = repo.compute.clone();
+    let (user_id, role) = (claims.sub.clone(), claims.canonical_role());
+
     let res = repo
         .cache
         .get_or_insert_with(&cache_key, || async move {
             let sat_clone = satellite.clone();
-            let state_res = tokio::task::spawn_blocking(move || {
-                astrodynamics::calculate_satellite_state(&sat_clone, epoch)
-            })
-            .await
-            .map_err(|e| e.to_string())?;
+            let state_res = engine
+                .run(1, user_id, role, move |_cancel| {
+                    astrodynamics::calculate_satellite_state(&sat_clone, epoch)
+                })
+                .await?;
 
             state_res.map_err(|e| e.to_string())
         })
@@ -1270,15 +1329,18 @@ pub async fn get_satellite_decay_risk(
         satellite.last_modified_date.timestamp()
     );
 
+    let engine = repo.compute.clone();
+    let (user_id, role) = (claims.sub.clone(), claims.canonical_role());
+
     let res = repo
         .cache
         .get_or_insert_with(&cache_key, || async move {
             let sat_clone = satellite.clone();
-            let decay_res = tokio::task::spawn_blocking(move || {
-                astrodynamics::calculate_decay_risk(&sat_clone)
-            })
-            .await
-            .map_err(|e| e.to_string())?;
+            let decay_res = engine
+                .run(1, user_id, role, move |_cancel| {
+                    astrodynamics::calculate_decay_risk(&sat_clone)
+                })
+                .await?;
 
             decay_res.map_err(|e| e.to_string())
         })
@@ -1323,19 +1385,27 @@ pub async fn get_decay_watch(
         time_bucket
     );
 
+    let engine = repo.compute.clone();
+    let (user_id, role) = (claims.sub.clone(), claims.canonical_role());
+    let est_cost_ms = (satellites.len() as u64).max(1);
+
     let res = repo
         .cache
         .get_or_insert_with(&cache_key, || async move {
-            let watch_res = tokio::task::spawn_blocking(move || {
-                astrodynamics::scan_decay_watch(&satellites, max_perigee, limit)
-            })
-            .await
-            .map_err(|e| e.to_string())?;
+            let watch_res = engine
+                .run(est_cost_ms, user_id, role, move |_cancel| {
+                    Ok::<_, String>(astrodynamics::scan_decay_watch(
+                        &satellites,
+                        max_perigee,
+                        limit,
+                    ))
+                })
+                .await?;
 
-            Ok(watch_res)
+            watch_res
         })
         .await
-        .map_err(AppError::InternalServerError)?;
+        .map_err(map_calculation_error)?;
 
     Ok(Json(res))
 }
