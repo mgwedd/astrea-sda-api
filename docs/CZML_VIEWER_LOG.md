@@ -148,3 +148,22 @@ Format: `YYYY-MM-DD — item — what was run — result — status change`.
   - **Relative Motion Layer (`relativeMotion`)**: Evaluates Hill/LVLH (RTN) relative motion. Emits target satellite trajectory, relative range link vector at epoch $t_0$, and RTN state readout marker detailing Range, Radial, In-Track, and Cross-Track coordinates.
   - **Compute Routing**: Added complexity estimation in `create_scene` for all new layers using `AstreaComputeEngine::estimate_complexity` for conjunctions and scaled sample budgets for relative motion and illumination.
   - **Contract & Tests**: Verified 8/8 tests in `tests/scene_tests.rs`, synced `api-docs/openapi.json`, and documented in Section 13.5 of `ASTRODYNAMICS_FORMULAS.md`.
+
+## Phase 5 (viewer distribution, compare mode & share links, branch `feat/czml-viewer-compare-and-deep-links`)
+
+- 2026-10-24 — Phase 5 architecture: Compare Mode and Shareable Deep Links (completing Phase 5 of #65).
+  - **Compare Mode**:
+    - Interactive overlay of two scenes (Scene A and Scene B) in Cesium with synchronized 4D orbital animation.
+    - Supports side-by-side comparison of different satellites (e.g. rendezvous or orbital phasing), before/after TLE updates, or different SDA layer representations (Ground track, Illumination, Passes, Conjunction, Relative Motion).
+    - Color differentiation scheme: Scene A in high-visibility Cyan (`#00e5ff` / `[0, 229, 255, 255]`), Scene B in high-contrast Neon Amber / Orange (`#ff9100` / `[255, 145, 0, 255]`).
+    - Robust entity collision prevention via packet ID namespacing (`compare_*`) in `transformCompareCzml` and badge prefixes (`[A]` / `[B]`).
+    - Contextual entity inspector resolving telemetry for either Scene A or Scene B based on selection.
+  - **Shareable Deep Linking**:
+    - Scene configurations encoded into `#scene=<base64>` in the URL hash, supporting one-click sharing via clipboard ("Share link" button) and automatic state restoration on load or `hashchange`.
+    - **Security Rules Strictly Preserved**:
+      - Auth tokens (Bearer JWTs) never leave the closure: zero storage in `localStorage`, `sessionStorage`, `document.cookie`, `location.search`, or `location.hash`.
+      - Observer geodetic coordinates (`lat`, `lon`, `altM`) are strictly excluded from `#scene=` serialization to protect ground station locations.
+      - Recursive sanitization in `sanitizeSceneConfig` enforced on both encode and decode.
+  - **Verification**:
+    - Added security and functional tests in `tests/viewer_tests.rs`: verified CSP headers, strict absence of client persistence for auth tokens and observer coordinates, presence of compare mode UI/color differentiation, and packet namespacing.
+
