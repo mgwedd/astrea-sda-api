@@ -29,10 +29,12 @@ pub struct SceneObserverLocation {
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
+#[schema(rename_all = "camelCase")]
 pub enum SceneLayer {
     /// 3D orbital trajectory / ground track for a satellite
     Groundtrack {
         /// Unique satellite identifier
+        #[serde(alias = "satellite_id")]
         satellite_id: Uuid,
         /// Optional human-readable display label
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -44,12 +46,49 @@ pub enum SceneLayer {
     /// Ground station pass visibility intervals and topocentric tracks
     Passes {
         /// Unique satellite identifier
+        #[serde(alias = "satellite_id")]
         satellite_id: Uuid,
         /// Observer ground station geodetic location
         observer: SceneObserverLocation,
         /// Minimum elevation angle threshold in degrees (defaults to 10.0)
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(alias = "min_elevation", skip_serializing_if = "Option::is_none")]
         min_elevation: Option<f64>,
+        /// Optional human-readable display label
+        #[serde(skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+    /// Orbital conjunction close-approach geometry between two satellites
+    Conjunction {
+        /// Primary satellite identifier
+        #[serde(alias = "primary_id")]
+        primary_id: Uuid,
+        /// Secondary satellite identifier
+        #[serde(alias = "secondary_id")]
+        secondary_id: Uuid,
+        /// Maximum miss distance threshold in km (defaults to 10.0)
+        #[serde(alias = "max_distance_km", skip_serializing_if = "Option::is_none")]
+        max_distance_km: Option<f64>,
+        /// Optional human-readable display label
+        #[serde(skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+    /// Orbital trajectory color-coded by solar illumination state (sunlit / penumbra / umbra)
+    Illumination {
+        /// Unique satellite identifier
+        #[serde(alias = "satellite_id")]
+        satellite_id: Uuid,
+        /// Optional human-readable display label
+        #[serde(skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+    /// Hill/LVLH (RTN) relative motion trajectory of target satellite relative to primary
+    RelativeMotion {
+        /// Primary satellite identifier (reference frame origin)
+        #[serde(alias = "primary_id")]
+        primary_id: Uuid,
+        /// Target satellite identifier
+        #[serde(alias = "target_id")]
+        target_id: Uuid,
         /// Optional human-readable display label
         #[serde(skip_serializing_if = "Option::is_none")]
         label: Option<String>,

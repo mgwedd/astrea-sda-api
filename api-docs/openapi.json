@@ -4328,6 +4328,102 @@
                 ]
               }
             }
+          },
+          {
+            "type": "object",
+            "description": "Orbital conjunction close-approach geometry between two satellites",
+            "required": [
+              "primary_id",
+              "secondary_id",
+              "type"
+            ],
+            "properties": {
+              "label": {
+                "type": "string",
+                "description": "Optional human-readable display label",
+                "nullable": true
+              },
+              "max_distance_km": {
+                "type": "number",
+                "format": "double",
+                "description": "Maximum miss distance threshold in km (defaults to 10.0)",
+                "nullable": true
+              },
+              "primary_id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "Primary satellite identifier"
+              },
+              "secondary_id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "Secondary satellite identifier"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "conjunction"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Orbital trajectory color-coded by solar illumination state (sunlit / penumbra / umbra)",
+            "required": [
+              "satellite_id",
+              "type"
+            ],
+            "properties": {
+              "label": {
+                "type": "string",
+                "description": "Optional human-readable display label",
+                "nullable": true
+              },
+              "satellite_id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "Unique satellite identifier"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "illumination"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Hill/LVLH (RTN) relative motion trajectory of target satellite relative to primary",
+            "required": [
+              "primary_id",
+              "target_id",
+              "type"
+            ],
+            "properties": {
+              "label": {
+                "type": "string",
+                "description": "Optional human-readable display label",
+                "nullable": true
+              },
+              "primary_id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "Primary satellite identifier (reference frame origin)"
+              },
+              "target_id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "Target satellite identifier"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "relativeMotion"
+                ]
+              }
+            }
           }
         ],
         "description": "Discriminated union of scene layer specifications.",
