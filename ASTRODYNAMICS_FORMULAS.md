@@ -1165,3 +1165,20 @@ Hence the CZML step is capped at 120 s. `tests/czml_tests.rs` keeps a regression
   - Target orbit trajectory sampled and displayed in magenta (`[220, 50, 220, 255]`).
   - Relative range vector link (`polyline`) connecting primary and target at epoch $t_{start}$.
   - RTN readout marker (`point` + `label`) at target position detailing range $\rho$, radial $\Delta r$, in-track $\Delta t$, and cross-track $\Delta n$.
+
+### 13.6 Viewer Distribution, Compare Mode & Deep Links (Phase 5 of #65)
+- **Compare Mode Architecture**:
+  - Visual overlay of two independent orbital scenarios or satellite trajectories (e.g., comparing two satellites, or before/after TLE updates).
+  - Multi-data-source Cesium integration with packet ID namespacing (`compare_*`) to prevent entity collision when rendering multiple orbits of identical catalogue IDs.
+  - Visual differentiation scheme:
+    - Primary Scene (Scene A): High-visibility Cyan (`[0, 229, 255, 255]` / `#00e5ff`) with `[A]` entity badging.
+    - Comparison Scene (Scene B): High-contrast Neon Amber / Orange (`[255, 145, 0, 255]` / `#ff9100`) with `[B]` entity badging.
+  - Support for multi-layer compare compositions across Groundtrack, Illumination, Passes, Conjunctions, and Hill/LVLH Relative Motion.
+  - Entity telemetry inspector automatically resolves entity provenance and inspects the appropriate target satellite.
+- **Deep Linking & Security Invariants**:
+  - URL hash encoding (`#scene=<base64-json>`) enables shareable bookmarks and direct scene restoration across sessions.
+  - **Strict Security Policies**:
+    - Auth tokens (Bearer JWTs) and session credentials are strictly in-memory closure variables; NEVER persisted to `localStorage`, `sessionStorage`, `document.cookie`, `location.search`, or `location.hash`.
+    - Observer physical coordinates (`lat`, `lon`, `altM`) represent sensitive ground station assets and are strictly excluded from serialization into `#scene=` hashes.
+    - Bidirectional defense-in-depth sanitization: both encoding and decoding sanitize scene configuration objects to ensure no sensitive parameters can leak or be maliciously injected.
+

@@ -22,12 +22,44 @@
 </form>
 <div id="app" hidden>
   <header>
-    <select id="sat" aria-label="Satellite"></select>
-    <label>Minutes <input id="minutes" type="number" min="1" max="1440" value="90"></label>
-    <button id="load">Ground track</button>
-    <button id="load-scene">Compose scene</button>
-    <span id="status" role="status"></span>
-    <button id="logout">Sign out</button>
+    <div class="controls-row">
+      <div class="field-group">
+        <span class="scene-badge badge-a" title="Primary Scene (A)">A</span>
+        <select id="sat" aria-label="Primary Satellite"></select>
+      </div>
+
+      <label class="toggle-label" title="Enable Compare Mode to overlay and visually contrast two scenes">
+        <input id="compare-mode" type="checkbox"> Compare Mode
+      </label>
+
+      <div id="compare-sat-group" class="field-group" hidden>
+        <span class="scene-badge badge-b" title="Comparison Scene (B)">B</span>
+        <select id="sat-b" aria-label="Comparison Satellite"></select>
+      </div>
+
+      <div class="field-group">
+        <label for="layer-type">Layer</label>
+        <select id="layer-type" aria-label="Layer type">
+          <option value="groundtrack">Ground track</option>
+          <option value="illumination">Illumination</option>
+          <option value="passes">Passes</option>
+          <option value="conjunction">Conjunction (A vs B)</option>
+          <option value="relativeMotion">Relative Motion (B rel A)</option>
+        </select>
+      </div>
+
+      <label>Minutes <input id="minutes" type="number" min="1" max="1440" value="90"></label>
+      <button id="load">Ground track</button>
+      <button id="load-scene">Compose scene</button>
+      <button id="share-link" type="button" title="Copy shareable deep link to this scene">Share link</button>
+      <span id="status" role="status"></span>
+      <button id="logout">Sign out</button>
+    </div>
+    <div id="compare-legend" class="legend-bar" hidden>
+      <span class="legend-item"><span class="swatch swatch-a"></span> Scene A (Primary)</span>
+      <span class="legend-item"><span class="swatch swatch-b"></span> Scene B (Comparison)</span>
+      <span class="legend-hint">Synchronized 4D orbital overlay</span>
+    </div>
   </header>
   <div id="globe"></div>
   <aside id="inspector" hidden>
