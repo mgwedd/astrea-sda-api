@@ -5,9 +5,11 @@ pub mod ephemeris;
 pub mod maneuver;
 pub mod pipeline;
 pub mod ratelimit;
+pub mod sensor;
 
 pub use astrodynamics::*;
 pub use compute::*;
 pub use maneuver::*;
 pub use pipeline::*;
 pub use ratelimit::*;
+pub use sensor::*;

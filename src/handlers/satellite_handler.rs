@@ -159,7 +159,7 @@ pub struct PipelineSyncResponse {
     pub force: Option<bool>,
 }
 
-fn map_calculation_error(e: String) -> AppError {
+pub(crate) fn map_calculation_error(e: String) -> AppError {
     if e.contains("NotFound")
         || e.contains("Satellite not found")
         || e.contains("No satellite overhead found")

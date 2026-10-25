@@ -304,6 +304,119 @@ $$
 
 *(Because $-\rho_S = \rho_N$, $\operatorname{atan2}(\rho_E, \rho_N)$ represents True North-referenced clockwise azimuth: $0^\circ = \text{North}, 90^\circ = \text{East}, 180^\circ = \text{South}, 270^\circ = \text{West}$).*
 
+### 2.6 Topocentric Angular Tracking Rates ($\dot{\text{Az}}, \dot{\text{El}}, \dot{\rho}$) & Mount Dynamics
+In the Topocentric Horizon (SEZ: South, East, Zenith) frame:
+Slant position vector: $\vec{\rho} = [\rho_S, \rho_E, \rho_Z]^T$
+Slant velocity vector: $\dot{\vec{\rho}} = [\dot{\rho}_S, \dot{\rho}_E, \dot{\rho}_Z]^T = \mathbf{R}_{\text{ECEF}\to\text{SEZ}} \vec{v}_{\text{sat, ECEF}}$ (since fixed ground sensor velocity $\vec{v}_{\text{obs, ECEF}} = \mathbf{0}$).
+
+#### 1. Slant Range & Radial Range Rate (Doppler Velocity)
+$$
+\rho = \|\vec{\rho}\| = \sqrt{\rho_S^2 + \rho_E^2 + \rho_Z^2}
+$$
+
+$$
+\dot{\rho} = \frac{d\rho}{dt} = \frac{\rho_S \dot{\rho}_S + \rho_E \dot{\rho}_E + \rho_Z \dot{\rho}_Z}{\rho}
+$$
+
+Positive range rate $\dot{\rho} > 0$ indicates a receding target, while negative $\dot{\rho} < 0$ indicates an approaching target.
+
+#### 2. Horizontal Slant Range & Azimuth Tracking Rate
+Let $\rho_h = \sqrt{\rho_S^2 + \rho_E^2}$ be the horizontal projection of slant range. True North azimuth is $Az = \operatorname{atan2}(\rho_E, -\rho_S)$. Differentiating with respect to time:
+
+$$
+\dot{Az} = \frac{d}{dt}\left(\operatorname{atan2}(\rho_E, -\rho_S)\right) = \frac{(-\rho_S)\dot{\rho}_E - \rho_E(-\dot{\rho}_S)}{(-\rho_S)^2 + \rho_E^2} = \frac{-\rho_S \dot{\rho}_E + \rho_E \dot{\rho}_S}{\rho_h^2} \quad (\text{rad/s})
+$$
+
+In degrees per second:
+
+$$
+\dot{Az}_{\text{deg/s}} = \dot{Az} \cdot \frac{180^\circ}{\pi}
+$$
+
+**Zenith Keyhole Singularity**: As the satellite approaches the zenith ($\rho_h \to 0$, $El \to 90^\circ$), the azimuth tracking rate $\dot{Az} \to \infty$. Standard altitude-azimuth (Alt-Az) telescope and tracking antenna mounts possess finite maximum slew rates $\dot{Az}_{\text{max}}$. If $\dot{Az}_{\text{peak}} > \dot{Az}_{\text{max}}$ or $El_{\text{peak}} > El_{\text{max}}$, the pass is flagged as mechanically infeasible (`is_mount_feasible = false`).
+
+#### 3. Elevation Tracking Rate
+Topocentric elevation is $El = \arcsin\left(\frac{\rho_Z}{\rho}\right)$. Differentiating with respect to time:
+
+$$
+\dot{El} = \frac{d}{dt}\arcsin\left(\frac{\rho_Z}{\rho}\right) = \frac{1}{\sqrt{1 - (\rho_Z/\rho)^2}} \cdot \frac{\dot{\rho}_Z \rho - \rho_Z \dot{\rho}}{\rho^2}
+$$
+
+Since $\sqrt{1 - (\rho_Z/\rho)^2} = \frac{\sqrt{\rho^2 - \rho_Z^2}}{\rho} = \frac{\rho_h}{\rho}$:
+
+$$
+\dot{El} = \frac{\rho \dot{\rho}_Z - \rho_Z \dot{\rho}}{\rho \cdot \rho_h} \quad (\text{rad/s})
+$$
+
+In degrees per second:
+
+$$
+\dot{El}_{\text{deg/s}} = \dot{El} \cdot \frac{180^\circ}{\pi}
+$$
+
+### 2.7 Terrain Horizon Elevation Masking (Circular Piecewise-Linear Interpolation)
+Ground station sites are obstructed by local topography, buildings, dome limits, and tree lines. A terrain mask profile is specified as an ordered or unordered set of $N$ horizon points:
+
+$$
+\mathcal{M} = \left\{(Az_k, El_k) \mid k = 0, \dots, N-1\right\}, \quad Az_k \in [0^\circ, 360^\circ), \; El_k \in [-10^\circ, 90^\circ]
+$$
+
+Points are sorted by azimuth: $0^\circ \le Az_0 < Az_1 < \dots < Az_{N-1} < 360^\circ$. For any instantaneous satellite azimuth $Az \in [0^\circ, 360^\circ)$:
+
+1. **Interior Segment**: If $Az_i \le Az \le Az_{i+1}$:
+$$
+t = \frac{Az - Az_i}{Az_{i+1} - Az_i}, \qquad El_{\text{mask}}(Az) = El_i + t(El_{i+1} - El_i)
+$$
+
+2. **Wrap-Around Segment**: If $Az < Az_0$ or $Az > Az_{N-1}$, interpolation spans across $360^\circ$ between $(Az_{N-1}, El_{N-1})$ and $(Az_0, El_0)$:
+$$
+\Delta Az = (Az_0 + 360^\circ) - Az_{N-1}
+$$
+
+$$
+d = \begin{cases}
+Az - Az_{N-1}, & \text{if } Az \ge Az_{N-1} \\
+Az + 360^\circ - Az_{N-1}, & \text{if } Az < Az_0
+\end{cases}
+$$
+
+$$
+t = \frac{d}{\Delta Az}, \qquad El_{\text{mask}}(Az) = El_{N-1} + t(El_0 - El_{N-1})
+$$
+
+3. **Effective Horizon Threshold & Visibility Margin**:
+Given the station's baseline minimum elevation cutoff $El_{\text{min}}$ (default $10^\circ$):
+$$
+El_{\text{cutoff}}(Az) = \max\left(El_{\text{min}}, El_{\text{mask}}(Az)\right)
+$$
+
+$$
+M(t) = El(t) - El_{\text{cutoff}}(Az(t))
+$$
+
+The target satellite is in line-of-sight if and only if $M(t) \ge 0$. The roots $M(t_{\text{AOS}}) = 0$ and $M(t_{\text{LOS}}) = 0$ are refined via 1-second bisection root finding.
+
+### 2.8 Multi-Station Sensor Network Scheduling & Handover Geometry
+A multi-station sensor network $\mathcal{S} = \{S_1, S_2, \dots, S_M\}$ schedules tracking passes across target satellites. For a given satellite, let consecutive passes over distinct sensors $S_A$ and $S_B$ be:
+
+$$
+\mathcal{P}_A = [t_{\text{AOS}, A}, t_{\text{LOS}, A}], \qquad \mathcal{P}_B = [t_{\text{AOS}, B}, t_{\text{LOS}, B}] \quad \text{with } t_{\text{AOS}, A} \le t_{\text{AOS}, B}
+$$
+
+1. **Simultaneous Dual-Station Coverage Overlap**:
+If $t_{\text{AOS}, B} \le t_{\text{LOS}, A}$, both sensors simultaneously track the satellite. The overlap window duration is:
+$$
+\Delta t_{\text{overlap}} = t_{\text{LOS}, A} - t_{\text{AOS}, B} \ge 0
+$$
+The handover epoch is scheduled at $t_{\text{handover}} = t_{\text{AOS}, B}$, providing a dual-visibility handover window during which telemetry and tracking lock can be handed over seamlessly.
+
+2. **Sequential Handover with Tracking Gap**:
+If $t_{\text{AOS}, B} > t_{\text{LOS}, A}$, the satellite traverses an untracked gap:
+$$
+\Delta t_{\text{gap}} = t_{\text{AOS}, B} - t_{\text{LOS}, A} > 0
+$$
+For adjacent tracking stations along the same orbital revolution ($\Delta t_{\text{gap}} \le 3600\text{ s}$), the event is recorded with negative overlap $\Delta t_{\text{overlap}} = -\Delta t_{\text{gap}}$, alerting ground operators to the acquisition gap.
+
 ---
 
 ## 3. Ground Track, Footprints & Spatial Geometry
