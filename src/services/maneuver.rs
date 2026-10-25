@@ -3,7 +3,7 @@ use crate::models::{
     AnomalyDetectionResponse, AnomalyStatus, DetectedManeuver, ManeuverType, ManeuversResponse,
     OrbitalParameterResidual, Satellite, Tle,
 };
-use crate::services::astrodynamics::{brouwer_mean_semi_major_axis_km, normalize_tle_line};
+use crate::services::astrodynamics::brouwer_mean_semi_major_axis_km;
 use chrono::{DateTime, Utc};
 use sgp4::Elements;
 
@@ -16,10 +16,7 @@ const BASELINE_WINDOW: usize = 5;
 const MIN_BASELINE_SAMPLES: usize = 3;
 
 fn parse_tle(name: &str, tle: &Tle) -> Result<Elements, AppError> {
-    let line1 = normalize_tle_line(&tle.line_one, '1');
-    let line2 = normalize_tle_line(&tle.line_two, '2');
-    Elements::from_tle(Some(name.to_string()), line1.as_bytes(), line2.as_bytes())
-        .map_err(|e| AppError::Sgp4Error(format!("Failed to parse TLE: {:?}", e)))
+    crate::services::astrodynamics::parse_tle_elements_raw(name, &tle.line_one, &tle.line_two)
 }
 
 fn epoch(e: &Elements) -> DateTime<Utc> {

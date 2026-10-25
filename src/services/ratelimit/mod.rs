@@ -61,6 +61,11 @@ pub trait RateLimiter: Send + Sync {
     fn is_enabled(&self) -> bool {
         true
     }
+
+    /// Returns whether client-supplied `X-Forwarded-For` and `X-Real-IP` headers should be trusted.
+    fn trust_forwarded_for(&self) -> bool {
+        false
+    }
 }
 
 /// Rate limiter errors.
@@ -94,6 +99,8 @@ pub struct RateLimitConfig {
     pub refill_rate: f64,
     /// Key prefix in Redis.
     pub key_prefix: String,
+    /// Whether to trust `X-Forwarded-For` and `X-Real-IP` headers (default: false).
+    pub trust_forwarded_for: bool,
 }
 
 impl Default for RateLimitConfig {
@@ -104,6 +111,7 @@ impl Default for RateLimitConfig {
             window_seconds: 60,
             refill_rate: 100.0 / 60.0,
             key_prefix: "rl:".to_string(),
+            trust_forwarded_for: false,
         }
     }
 }
@@ -111,13 +119,14 @@ impl Default for RateLimitConfig {
 impl RateLimitConfig {
     /// Parse rate limit configuration from environment variables.
     ///
-    /// | Variable                 | Default          | Description                          |
-    /// |--------------------------|------------------|--------------------------------------|
-    /// | `RATE_LIMIT_ALGORITHM`   | `SLIDING_WINDOW` | `SLIDING_WINDOW` or `TOKEN_BUCKET`   |
-    /// | `RATE_LIMIT_MAX`         | `100`            | Max requests / bucket capacity       |
-    /// | `RATE_LIMIT_WINDOW_SECS` | `60`             | Window size in seconds               |
-    /// | `RATE_LIMIT_REFILL_RATE` | `1.67`           | Tokens per second (token bucket)     |
-    /// | `RATE_LIMIT_PREFIX`      | `rl:`            | Redis key prefix                     |
+    /// | Variable                          | Default          | Description                          |
+    /// |-----------------------------------|------------------|--------------------------------------|
+    /// | `RATE_LIMIT_ALGORITHM`            | `SLIDING_WINDOW` | `SLIDING_WINDOW` or `TOKEN_BUCKET`   |
+    /// | `RATE_LIMIT_MAX`                  | `100`            | Max requests / bucket capacity       |
+    /// | `RATE_LIMIT_WINDOW_SECS`          | `60`             | Window size in seconds               |
+    /// | `RATE_LIMIT_REFILL_RATE`          | `1.67`           | Tokens per second (token bucket)     |
+    /// | `RATE_LIMIT_PREFIX`               | `rl:`            | Redis key prefix                     |
+    /// | `RATE_LIMIT_TRUST_FORWARDED_FOR`  | `false`          | Trust client X-Forwarded-For headers |
     pub fn from_env() -> Self {
         Self::from_lookup(|k| std::env::var(k).ok())
     }
@@ -151,12 +160,18 @@ impl RateLimitConfig {
 
         let key_prefix = lookup("RATE_LIMIT_PREFIX").unwrap_or_else(|| "rl:".to_string());
 
+        let trust_forwarded_for = lookup("RATE_LIMIT_TRUST_FORWARDED_FOR")
+            .or_else(|| lookup("TRUST_FORWARDED_FOR"))
+            .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+            .unwrap_or(false);
+
         RateLimitConfig {
             algorithm,
             max_requests,
             window_seconds,
             refill_rate,
             key_prefix,
+            trust_forwarded_for,
         }
     }
 }
@@ -172,19 +187,23 @@ pub fn build_rate_limiter(
     match redis_conn {
         Some(conn) => match config.algorithm {
             RateLimitAlgorithm::SlidingWindow => {
-                Ok(Box::new(sliding_window::SlidingWindowLimiter::new(
+                Ok(Box::new(sliding_window::SlidingWindowLimiter::with_trust(
                     conn,
                     config.max_requests,
                     Duration::from_secs(config.window_seconds),
                     config.key_prefix,
+                    config.trust_forwarded_for,
                 )))
             }
-            RateLimitAlgorithm::TokenBucket => Ok(Box::new(token_bucket::TokenBucketLimiter::new(
-                conn,
-                config.max_requests,
-                config.refill_rate,
-                config.key_prefix,
-            ))),
+            RateLimitAlgorithm::TokenBucket => {
+                Ok(Box::new(token_bucket::TokenBucketLimiter::with_trust(
+                    conn,
+                    config.max_requests,
+                    config.refill_rate,
+                    config.key_prefix,
+                    config.trust_forwarded_for,
+                )))
+            }
         },
         None => Ok(Box::new(noop::NoOpRateLimiter)),
     }

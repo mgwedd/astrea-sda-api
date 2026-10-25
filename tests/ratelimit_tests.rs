@@ -122,41 +122,103 @@ fn test_build_rate_limiter_without_redis_creates_noop() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Client Key Extraction Tests
+// Client Key Extraction Tests (Security R12/Q10)
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn test_extract_key_from_x_forwarded_for() {
+fn test_extract_key_from_x_forwarded_for_when_trusted() {
     let req = Request::builder()
         .header("x-forwarded-for", "192.168.1.1, 10.0.0.1")
         .body(Body::empty())
         .unwrap();
-    assert_eq!(middleware::extract_client_key(&req), "192.168.1.1");
+    assert_eq!(middleware::extract_client_key(&req, true), "192.168.1.1");
 }
 
 #[test]
-fn test_extract_key_from_x_real_ip() {
+fn test_extract_key_from_x_forwarded_for_ignored_when_untrusted() {
+    let req = Request::builder()
+        .header("x-forwarded-for", "192.168.1.1, 10.0.0.1")
+        .body(Body::empty())
+        .unwrap();
+    // Untrusted header is ignored; with no socket extension, safely falls back to anonymous
+    assert_eq!(middleware::extract_client_key(&req, false), "anonymous");
+}
+
+#[test]
+fn test_extract_key_from_peer_ip_when_untrusted() {
+    let mut req = Request::builder()
+        .header("x-forwarded-for", "192.168.1.1, 10.0.0.1")
+        .body(Body::empty())
+        .unwrap();
+    let peer_addr: std::net::SocketAddr = "127.0.0.1:8080".parse().unwrap();
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(peer_addr));
+
+    // When untrusted, spoofed X-Forwarded-For is ignored and peer IP is used
+    assert_eq!(middleware::extract_client_key(&req, false), "127.0.0.1");
+}
+
+#[test]
+fn test_extract_key_from_peer_ip_socket_addr_extension() {
+    let mut req = Request::builder()
+        .header("x-forwarded-for", "1.2.3.4")
+        .body(Body::empty())
+        .unwrap();
+    let peer_addr: std::net::SocketAddr = "10.0.0.99:54321".parse().unwrap();
+    req.extensions_mut().insert(peer_addr);
+
+    assert_eq!(middleware::extract_client_key(&req, false), "10.0.0.99");
+}
+
+#[test]
+fn test_extract_key_from_x_real_ip_when_trusted() {
     let req = Request::builder()
         .header("x-real-ip", "10.0.0.42")
         .body(Body::empty())
         .unwrap();
-    assert_eq!(middleware::extract_client_key(&req), "10.0.0.42");
+    assert_eq!(middleware::extract_client_key(&req, true), "10.0.0.42");
+}
+
+#[test]
+fn test_extract_key_from_x_real_ip_ignored_when_untrusted() {
+    let req = Request::builder()
+        .header("x-real-ip", "10.0.0.42")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(middleware::extract_client_key(&req, false), "anonymous");
 }
 
 #[test]
 fn test_extract_key_fallback_anonymous() {
     let req = Request::builder().body(Body::empty()).unwrap();
-    assert_eq!(middleware::extract_client_key(&req), "anonymous");
+    assert_eq!(middleware::extract_client_key(&req, false), "anonymous");
+    assert_eq!(middleware::extract_client_key(&req, true), "anonymous");
 }
 
 #[test]
-fn test_x_forwarded_for_takes_priority_over_x_real_ip() {
+fn test_x_forwarded_for_takes_priority_over_x_real_ip_when_trusted() {
     let req = Request::builder()
         .header("x-forwarded-for", "1.2.3.4")
         .header("x-real-ip", "5.6.7.8")
         .body(Body::empty())
         .unwrap();
-    assert_eq!(middleware::extract_client_key(&req), "1.2.3.4");
+    assert_eq!(middleware::extract_client_key(&req, true), "1.2.3.4");
+}
+
+#[test]
+fn test_rate_limit_config_trust_forwarded_for_env() {
+    let mut lookup = HashMap::new();
+    assert!(!RateLimitConfig::from_lookup(|k| lookup.get(k).cloned()).trust_forwarded_for);
+
+    lookup.insert("RATE_LIMIT_TRUST_FORWARDED_FOR", "true".to_string());
+    assert!(RateLimitConfig::from_lookup(|k| lookup.get(k).cloned()).trust_forwarded_for);
+
+    lookup.insert("RATE_LIMIT_TRUST_FORWARDED_FOR", "false".to_string());
+    assert!(!RateLimitConfig::from_lookup(|k| lookup.get(k).cloned()).trust_forwarded_for);
+
+    lookup.remove("RATE_LIMIT_TRUST_FORWARDED_FOR");
+    lookup.insert("TRUST_FORWARDED_FOR", "1".to_string());
+    assert!(RateLimitConfig::from_lookup(|k| lookup.get(k).cloned()).trust_forwarded_for);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -268,6 +330,7 @@ mod redis_integration {
             window_seconds: 60,
             refill_rate: 1.0,
             key_prefix: format!("test:{}:", uuid::Uuid::new_v4()),
+            trust_forwarded_for: false,
         };
 
         let limiter = ratelimit::build_rate_limiter(config, Some(conn)).unwrap();
@@ -292,6 +355,7 @@ mod redis_integration {
             window_seconds: 60,
             refill_rate: 0.0,
             key_prefix: format!("test:{}:", uuid::Uuid::new_v4()),
+            trust_forwarded_for: false,
         };
 
         let limiter = ratelimit::build_rate_limiter(config, Some(conn)).unwrap();
@@ -316,6 +380,7 @@ mod redis_integration {
             window_seconds: 3600,
             refill_rate: 0.0001,
             key_prefix: format!("test:{}:", uuid::Uuid::new_v4()),
+            trust_forwarded_for: false,
         };
 
         let limiter = ratelimit::build_rate_limiter(config, Some(conn)).unwrap();
@@ -345,6 +410,7 @@ mod redis_integration {
             window_seconds: 3600,
             refill_rate: 0.0,
             key_prefix: format!("test:{}:", uuid::Uuid::new_v4()),
+            trust_forwarded_for: false,
         };
 
         let limiter = ratelimit::build_rate_limiter(config, Some(conn)).unwrap();

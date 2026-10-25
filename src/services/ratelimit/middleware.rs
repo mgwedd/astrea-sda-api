@@ -16,16 +16,35 @@ use std::sync::Arc;
 
 /// Extract a rate limit key from the request.
 ///
-/// Priority:
-/// 1. `X-Forwarded-For` header (first IP) — for reverse-proxied deployments.
+/// If `trust_forwarded_for` is true:
+/// 1. `X-Forwarded-For` header (first IP in the comma-separated chain) — for reverse-proxied deployments.
 /// 2. Connected peer address (`X-Real-IP`) — direct connections / nginx proxy.
-/// 3. Fallback to `"anonymous"`.
-pub fn extract_client_key(req: &Request<Body>) -> String {
-    // Check X-Forwarded-For first (common in production behind a load balancer)
-    if let Some(forwarded) = req.headers().get("x-forwarded-for") {
-        if let Ok(val) = forwarded.to_str() {
-            if let Some(first_ip) = val.split(',').next() {
-                let ip = first_ip.trim();
+/// 3. Direct connection / peer IP from socket extensions (`ConnectInfo<SocketAddr>` or `SocketAddr`).
+/// 4. Fallback to `"anonymous"`.
+///
+/// If `trust_forwarded_for` is false (default):
+/// Client-supplied proxy headers (`X-Forwarded-For`, `X-Real-IP`) are untrusted and ignored
+/// to prevent rate limit evasion through header spoofing.
+/// 1. Direct connection / peer IP from socket extensions (`ConnectInfo<SocketAddr>` or `SocketAddr`).
+/// 2. Fallback to `"anonymous"`.
+pub fn extract_client_key(req: &Request<Body>, trust_forwarded_for: bool) -> String {
+    if trust_forwarded_for {
+        // Check X-Forwarded-For first (common in production behind a load balancer)
+        if let Some(forwarded) = req.headers().get("x-forwarded-for") {
+            if let Ok(val) = forwarded.to_str() {
+                if let Some(first_ip) = val.split(',').next() {
+                    let ip = first_ip.trim();
+                    if !ip.is_empty() {
+                        return ip.to_string();
+                    }
+                }
+            }
+        }
+
+        // Check X-Real-IP (nginx convention)
+        if let Some(real_ip) = req.headers().get("x-real-ip") {
+            if let Ok(val) = real_ip.to_str() {
+                let ip = val.trim();
                 if !ip.is_empty() {
                     return ip.to_string();
                 }
@@ -33,14 +52,15 @@ pub fn extract_client_key(req: &Request<Body>) -> String {
         }
     }
 
-    // Check X-Real-IP (nginx convention)
-    if let Some(real_ip) = req.headers().get("x-real-ip") {
-        if let Ok(val) = real_ip.to_str() {
-            let ip = val.trim();
-            if !ip.is_empty() {
-                return ip.to_string();
-            }
-        }
+    // Safely fall back to peer address from direct connection info
+    if let Some(connect_info) = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+    {
+        return connect_info.0.ip().to_string();
+    }
+    if let Some(addr) = req.extensions().get::<std::net::SocketAddr>() {
+        return addr.ip().to_string();
     }
 
     "anonymous".to_string()
@@ -142,7 +162,7 @@ pub async fn rate_limit_layer(
         return next.run(req).await;
     }
 
-    let client_key = extract_client_key(&req);
+    let client_key = extract_client_key(&req, limiter.trust_forwarded_for());
     match limiter.check(&client_key).await {
         Ok(decision) => {
             if !decision.allowed {

@@ -7,7 +7,7 @@ use astrea_sda_api::{
     repository::SatelliteRepository,
     services::astrodynamics::{
         calculate_decay_risk, calculate_foster_collision_probability, calculate_relative_motion,
-        calculate_satellite_state, find_pass_schedule, scan_decay_watch,
+        calculate_satellite_state, find_next_visible_pass, find_pass_schedule, scan_decay_watch,
     },
 };
 use axum::{
@@ -457,4 +457,37 @@ fn decay_risk_perigee_uses_radius_at_apsis_latitude() {
     let res = calculate_decay_risk(&iss).unwrap();
     assert!((res.perigee_altitude_km - (a * (1.0 - el.eccentricity) - r)).abs() < 0.06);
     assert!((res.apogee_altitude_km - (a * (1.0 + el.eccentricity) - r)).abs() < 0.06);
+}
+
+#[test]
+fn test_pass_search_propagation_error_not_masked() {
+    use astrea_sda_api::error::AppError;
+    use tokio_util::sync::CancellationToken;
+
+    let bad_sat = mock_sat(
+        "BROKEN",
+        "1 00000U INVALID 00000.00000000",
+        "2 00000 CORRUPTED",
+    );
+    let start_time = Utc.with_ymd_and_hms(2024, 3, 23, 21, 31, 0).unwrap();
+
+    // 1. find_next_visible_pass must return Sgp4Error, NOT NotFound
+    let next_pass_res =
+        find_next_visible_pass(&bad_sat, 30.2672, -97.7431, 150.0, start_time, 10.0, 120);
+    assert!(
+        matches!(next_pass_res, Err(AppError::Sgp4Error(_))),
+        "find_next_visible_pass must return Sgp4Error for unparseable/failed TLE, got: {:?}",
+        next_pass_res
+    );
+
+    // 2. find_pass_schedule must return Sgp4Error, NOT an empty pass list
+    let cancel = CancellationToken::new();
+    let schedule_res = find_pass_schedule(
+        &bad_sat, 30.2672, -97.7431, 150.0, start_time, 10.0, 1, false, &cancel,
+    );
+    assert!(
+        matches!(schedule_res, Err(AppError::Sgp4Error(_))),
+        "find_pass_schedule must return Sgp4Error for unparseable/failed TLE, got: {:?}",
+        schedule_res
+    );
 }

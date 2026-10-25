@@ -70,6 +70,7 @@ pub struct SlidingWindowLimiter {
     window_seconds: u64,
     key_prefix: String,
     script: redis::Script,
+    trust_forwarded_for: bool,
 }
 
 impl SlidingWindowLimiter {
@@ -84,18 +85,33 @@ impl SlidingWindowLimiter {
         window: Duration,
         key_prefix: String,
     ) -> Self {
+        Self::with_trust(redis_conn, max_requests, window, key_prefix, false)
+    }
+
+    /// Create a new sliding window counter limiter with explicit `trust_forwarded_for` configuration.
+    pub fn with_trust(
+        redis_conn: ConnectionManager,
+        max_requests: u64,
+        window: Duration,
+        key_prefix: String,
+        trust_forwarded_for: bool,
+    ) -> Self {
         Self {
             redis_conn,
             max_requests,
             window_seconds: window.as_secs().max(1),
             key_prefix,
             script: redis::Script::new(SLIDING_WINDOW_SCRIPT),
+            trust_forwarded_for,
         }
     }
 }
 
 #[async_trait]
 impl RateLimiter for SlidingWindowLimiter {
+    fn trust_forwarded_for(&self) -> bool {
+        self.trust_forwarded_for
+    }
     async fn check(&self, key: &str) -> Result<RateLimitDecision, RateLimitError> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)

@@ -55,7 +55,7 @@ Severity: H = could produce wrong science or a security hole; M = rework or user
 - Q6. What TLE-age threshold warns or rejects? Needs a number backed by SGP4 error data.
 - Q7. Adaptive step sizing: worth it in v1, or fixed step + Lagrange first? Decide from R1 measurements.
 - Q8. Time-range rule across layers (union vs intersection) and behavior outside a layer's interval. Unspecified in the issue; pick and document.
-- Q10. Rate-limit key trusts client-supplied `X-Forwarded-For` (R12). Fix in this issue, separate security issue, or accept given deployment behind a stripping LB? Login brute-force protection depends on it.
+- Q10. **RESOLVED in Issue #75**: Refactored `extract_client_key` and `RateLimitConfig` so `X-Forwarded-For` and `X-Real-IP` are only trusted when explicitly configured (`RATE_LIMIT_TRUST_FORWARDED_FOR`), falling back safely to direct connection / peer IP from `ConnectInfo<SocketAddr>` / `SocketAddr` extensions to prevent header spoofing.
 - Q9. Does the existing `czml` field need to stay in `GroundTrackResponse` for compatibility while scenes use new builders?
 
 ## Build log (append below)
@@ -201,3 +201,10 @@ Format: `YYYY-MM-DD — item — what was run — result — status change`.
       - Recursive sanitization in `sanitizeSceneConfig` enforced on both encode and decode.
   - **Verification**:
     - Added security and functional tests in `tests/viewer_tests.rs`: verified CSP headers, strict absence of client persistence for auth tokens and observer coordinates, presence of compare mode UI/color differentiation, and packet namespacing.
+
+## Issue #75 Fixes (security & correctness smells, branch `fix/security-and-correctness-smells-75`)
+
+- 2026-10-24 — Issue #75 fixes:
+  - **Rate Limiting Security (R12/Q10)**: `extract_client_key` refactored to require explicit configuration (`trust_forwarded_for: bool`) before trusting client-supplied `X-Forwarded-For` or `X-Real-IP`. Direct connection / peer IP extraction safely falls back to `ConnectInfo<SocketAddr>` or `SocketAddr` request extensions to prevent header spoofing.
+  - **Pass Search Error Masking**: Removed `unwrap_or(f64::NEG_INFINITY)` in `find_next_visible_pass` and `find_pass_schedule`. Propagation errors and invalid TLEs now explicitly propagate as `AppError::Sgp4Error` instead of being masked as `NotFound` or empty pass lists.
+  - **TLE Parsing Consolidation**: Consolidated repetitive `Elements::from_tle` and `Constants::from_elements` calls across `astrodynamics.rs` by routing through `Ephemeris::from_satellite` and shared `parse_satellite_elements` / `parse_tle_elements_raw` helpers.
