@@ -60,6 +60,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 | :--- | :--- | :--- |
 | 🛠️ **Swagger UI** | [`https://sda.localtest.me:8443/`](https://sda.localtest.me:8443/) *(or `/swagger-ui`)* | Live, interactive OpenAPI request sandbox with Bearer auth. |
 | 📄 **ReDoc Reference** | [`https://sda.localtest.me:8443/docs`](https://sda.localtest.me:8443/docs) | Clean, searchable reference documentation. |
+| 🌌 **3D/4D Cesium Viewer** | [`https://sda.localtest.me:8443/viewer`](https://sda.localtest.me:8443/viewer) | Full 3D/4D globe with synchronized temporal scrubbing, composable scenes, compare mode, and deep links. |
 | 📋 **OpenAPI JSON** | [`https://sda.localtest.me:8443/api-docs/openapi.json`](https://sda.localtest.me:8443/api-docs/openapi.json) | Raw OpenAPI 3.0 contract for code generators and linters. |
 | 🌿 **Fern Dev Portal** | `npx fern docs dev` | Multi-language SDK documentation with dynamic snippets. |
 
@@ -128,7 +129,32 @@ curl -s -H "Authorization: Bearer $TOKEN" \
   "https://sda.localtest.me:8443/v1/satellites/<SATELLITE_UUID>/groundtrack?duration_minutes=90&step_seconds=30&format=geojson" | jq
 ```
 
-### 7. Authenticate & Issue Scoped Bearer Token
+### 7. Compose 3D/4D Multi-Layer CZML Scenes (`POST /v1/scenes`)
+Compose heterogeneous SDA layers (ground tracks, sensor passes, conjunctions, solar illumination states, and Hill/LVLH relative motion) into a single cohesive, time-synchronized CZML stream for Cesium:
+
+```bash
+curl -s -X POST "https://sda.localtest.me:8443/v1/scenes?format=czml" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start": "2026-10-24T00:00:00Z",
+    "durationHours": 6.0,
+    "stepSeconds": 60,
+    "layers": [
+      { "type": "groundtrack", "satelliteId": "<PRIMARY_UUID>", "label": "Primary Orbit", "rgba": [0, 229, 255, 255] },
+      { "type": "illumination", "satelliteId": "<PRIMARY_UUID>", "label": "Solar State" },
+      { "type": "conjunction", "primaryId": "<PRIMARY_UUID>", "secondaryId": "<SECONDARY_UUID>", "maxDistanceKm": 25.0 },
+      { "type": "relativeMotion", "primaryId": "<PRIMARY_UUID>", "targetId": "<TARGET_UUID>", "label": "Hill Frame Rel Motion" }
+    ]
+  }'
+```
+
+The embedded Cesium client at [`/viewer`](docs/VIEWER.md) consumes this output natively, featuring:
+- **Compare Mode**: Overlay two scenes side-by-side (`Cyan [A]` vs `Orange [B]`) with namespaced entity IDs.
+- **Deep Linking**: Shareable URL hashes (`#scene=...`) strictly preserving zero auth token persistence and excluding ground station coordinates.
+- **Interactive Request Inspector**: Click-to-query live telemetry and metadata directly on the globe.
+
+### 8. Authenticate & Issue Scoped Bearer Token
 ```bash
 # Generate a local test token for admin operations
 ./scripts/make-jwt.sh operator_user admin
