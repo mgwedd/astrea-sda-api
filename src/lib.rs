@@ -68,6 +68,8 @@ impl Modify for SecurityAddon {
         handlers::satellite_handler::transform_elements,
         handlers::satellite_handler::transform_frames,
         handlers::satellite_handler::create_scene,
+        handlers::sensor_handler::schedule_sensor_network_handler,
+        handlers::sensor_handler::evaluate_sensor_passes_handler,
     ),
     components(
         schemas(
@@ -131,6 +133,14 @@ impl Modify for SecurityAddon {
             models::SceneResponse,
             models::SceneLayer,
             models::SceneObserverLocation,
+            models::HorizonMaskPoint,
+            models::SensorDefinition,
+            models::TrackingRates,
+            models::ScheduledSensorPass,
+            models::SensorHandover,
+            models::SensorScheduleRequest,
+            models::SingleSensorPassesRequest,
+            models::SensorScheduleResponse,
             handlers::satellite_handler::PipelineSyncResponse,
             handlers::satellite_handler::PipelineGroupSyncDetail,
             pagination::PaginationMeta,
@@ -143,6 +153,7 @@ impl Modify for SecurityAddon {
         (name = "Authentication", description = "JWT Token issuance endpoints"),
         (name = "Satellites", description = "Satellite catalog, telemetry, and individual satellite astrodynamics"),
         (name = "Astrodynamics", description = "Multi-satellite and celestial space domain awareness (SDA) calculations"),
+        (name = "Sensors", description = "Ground station, optical telescope, and radar sensor network tracking schedules"),
         (name = "Pipelines", description = "CelesTrak automated discovery pipelines")
     )
 )]
@@ -250,6 +261,14 @@ pub fn create_router_with_auth_and_limiter(
         .route("/transits/lunar", get(handlers::get_lunar_transits))
         .route("/pipelines/sync", post(handlers::trigger_pipeline_sync))
         .route("/scenes", post(handlers::create_scene))
+        .route(
+            "/sensors/schedule",
+            post(handlers::schedule_sensor_network_handler),
+        )
+        .route(
+            "/sensors/passes",
+            post(handlers::evaluate_sensor_passes_handler),
+        )
         .with_state(repo)
         .layer(axum::middleware::from_fn_with_state(
             limiter,

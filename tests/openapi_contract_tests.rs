@@ -22,6 +22,7 @@ fn test_openapi_schema_static_contract() {
     assert!(tag_names.contains(&"Authentication"));
     assert!(tag_names.contains(&"Satellites"));
     assert!(tag_names.contains(&"Astrodynamics"));
+    assert!(tag_names.contains(&"Sensors"));
     assert!(tag_names.contains(&"Pipelines"));
 
     // 3. Endpoint Paths Contract Verification
@@ -235,6 +236,27 @@ fn test_openapi_schema_static_contract() {
         );
     }
 
+    let sensor_endpoints = [
+        (
+            &paths["/v1/sensors/schedule"]["post"],
+            "scheduleSensorNetwork",
+        ),
+        (&paths["/v1/sensors/passes"]["post"], "evaluateSensorPasses"),
+    ];
+    for (endpoint, op) in sensor_endpoints {
+        assert_eq!(
+            endpoint["tags"][0].as_str(),
+            Some("Sensors"),
+            "Expected 'Sensors' tag for operation {}",
+            op
+        );
+        assert!(
+            endpoint["security"].is_array(),
+            "Expected bearer_auth security for operation {}",
+            op
+        );
+    }
+
     // 4. Component Schemas & Security Schemes Contract Verification
     let schemas = &v["components"]["schemas"];
     let required_schemas = [
@@ -284,6 +306,14 @@ fn test_openapi_schema_static_contract() {
         "SceneResponse",
         "SceneLayer",
         "SceneObserverLocation",
+        "HorizonMaskPoint",
+        "SensorDefinition",
+        "TrackingRates",
+        "ScheduledSensorPass",
+        "SensorHandover",
+        "SensorScheduleRequest",
+        "SingleSensorPassesRequest",
+        "SensorScheduleResponse",
         "PaginationMeta",
         "PaginatedResponseSatellite",
         "ErrorResponse",

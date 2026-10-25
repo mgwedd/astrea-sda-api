@@ -2173,6 +2173,136 @@
         ]
       }
     },
+    "/v1/sensors/passes": {
+      "post": {
+        "tags": [
+          "Sensors"
+        ],
+        "operationId": "evaluateSensorPasses",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SingleSensorPassesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Satellite tracking passes over the sensor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SensorScheduleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid sensor or satellite parameters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Missing or invalid JWT token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden - Insufficient permissions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/v1/sensors/schedule": {
+      "post": {
+        "tags": [
+          "Sensors"
+        ],
+        "operationId": "scheduleSensorNetwork",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SensorScheduleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Sensor network tracking pass schedule and handovers",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SensorScheduleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid sensor parameters or limits exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Missing or invalid JWT token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden - Insufficient permissions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/v1/transits/lunar": {
       "get": {
         "tags": [
@@ -3318,6 +3448,26 @@
             "items": {
               "$ref": "#/components/schemas/GroundTrackPoint"
             }
+          }
+        }
+      },
+      "HorizonMaskPoint": {
+        "type": "object",
+        "description": "2D azimuth-elevation coordinate defining a point on a terrain horizon profile.",
+        "required": [
+          "azimuthDeg",
+          "elevationDeg"
+        ],
+        "properties": {
+          "azimuthDeg": {
+            "type": "number",
+            "format": "double",
+            "description": "True North-referenced azimuth in degrees [0.0, 360.0)"
+          },
+          "elevationDeg": {
+            "type": "number",
+            "format": "double",
+            "description": "Minimum local horizon elevation angle in degrees [-10.0, 90.0]"
           }
         }
       },
@@ -4531,6 +4681,328 @@
           }
         }
       },
+      "ScheduledSensorPass": {
+        "type": "object",
+        "description": "Scheduled satellite tracking pass over a specific ground sensor.",
+        "required": [
+          "passId",
+          "sensorId",
+          "sensorName",
+          "satelliteId",
+          "satelliteName",
+          "aosTime",
+          "aosAzimuthDeg",
+          "aosElevationDeg",
+          "tcaTime",
+          "tcaAzimuthDeg",
+          "maxElevationDeg",
+          "tcaRangeKm",
+          "tcaRangeRateKms",
+          "tcaAzimuthRateDegS",
+          "tcaElevationRateDegS",
+          "peakAzimuthRateDegS",
+          "peakElevationRateDegS",
+          "isMountFeasible",
+          "isOpticalVisible",
+          "losTime",
+          "losAzimuthDeg",
+          "losElevationDeg",
+          "durationSeconds"
+        ],
+        "properties": {
+          "aosAzimuthDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "aosElevationDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "aosTime": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "durationSeconds": {
+            "type": "number",
+            "format": "double"
+          },
+          "isMountFeasible": {
+            "type": "boolean",
+            "description": "True if pass rates and elevations stay within sensor mount mechanical limits"
+          },
+          "isOpticalVisible": {
+            "type": "boolean",
+            "description": "True if satellite is illuminated and observer is in twilight/darkness"
+          },
+          "losAzimuthDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "losElevationDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "losTime": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "maxElevationDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "passId": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "peakAzimuthRateDegS": {
+            "type": "number",
+            "format": "double",
+            "description": "Peak azimuth rate experienced during the pass in deg/s"
+          },
+          "peakElevationRateDegS": {
+            "type": "number",
+            "format": "double",
+            "description": "Peak elevation rate experienced during the pass in deg/s"
+          },
+          "satelliteId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "satelliteName": {
+            "type": "string"
+          },
+          "sensorId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sensorName": {
+            "type": "string"
+          },
+          "tcaAzimuthDeg": {
+            "type": "number",
+            "format": "double"
+          },
+          "tcaAzimuthRateDegS": {
+            "type": "number",
+            "format": "double"
+          },
+          "tcaElevationRateDegS": {
+            "type": "number",
+            "format": "double"
+          },
+          "tcaRangeKm": {
+            "type": "number",
+            "format": "double"
+          },
+          "tcaRangeRateKms": {
+            "type": "number",
+            "format": "double"
+          },
+          "tcaTime": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "visualMagnitude": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          }
+        }
+      },
+      "SensorDefinition": {
+        "type": "object",
+        "description": "Definition of a ground sensor (optical telescope, radar, or tracking station).",
+        "required": [
+          "name",
+          "lat",
+          "lon",
+          "altM"
+        ],
+        "properties": {
+          "altM": {
+            "type": "number",
+            "format": "double",
+            "description": "Altitude above WGS-84 reference ellipsoid in metres"
+          },
+          "horizonMask": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HorizonMaskPoint"
+            },
+            "description": "Custom 360° terrain horizon elevation profile",
+            "nullable": true
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Optional sensor unique identifier (generated if omitted)",
+            "nullable": true
+          },
+          "lat": {
+            "type": "number",
+            "format": "double",
+            "description": "Geodetic latitude in degrees [-90.0, 90.0]"
+          },
+          "lon": {
+            "type": "number",
+            "format": "double",
+            "description": "Geodetic longitude in degrees [-180.0, 180.0]"
+          },
+          "maxAzimuthRateDegS": {
+            "type": "number",
+            "format": "double",
+            "description": "Maximum mount azimuth slew rate in deg/s (e.g. 15.0 deg/s)",
+            "nullable": true
+          },
+          "maxElevationDeg": {
+            "type": "number",
+            "format": "double",
+            "description": "Maximum mount elevation angle in degrees (e.g. 85.0 to model zenith keyhole / dome limits)",
+            "nullable": true
+          },
+          "maxElevationRateDegS": {
+            "type": "number",
+            "format": "double",
+            "description": "Maximum mount elevation slew rate in deg/s (e.g. 5.0 deg/s)",
+            "nullable": true
+          },
+          "minElevationDeg": {
+            "type": "number",
+            "format": "double",
+            "description": "Default minimum elevation cutoff in degrees (defaults to 10.0)",
+            "nullable": true
+          },
+          "name": {
+            "type": "string",
+            "description": "Human-readable sensor name"
+          },
+          "opticalOnly": {
+            "type": "boolean",
+            "description": "Whether only sunlit passes during local darkness are tracked",
+            "nullable": true
+          }
+        }
+      },
+      "SensorHandover": {
+        "type": "object",
+        "description": "Transition or overlap event between two sensors tracking the same satellite.",
+        "required": [
+          "satelliteId",
+          "satelliteName",
+          "fromSensorId",
+          "fromSensorName",
+          "toSensorId",
+          "toSensorName",
+          "handoverTime",
+          "overlapSeconds"
+        ],
+        "properties": {
+          "fromSensorId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "fromSensorName": {
+            "type": "string"
+          },
+          "handoverTime": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "overlapSeconds": {
+            "type": "number",
+            "format": "double",
+            "description": "Overlap duration in seconds (positive = simultaneous dual-station coverage, negative = gap)"
+          },
+          "satelliteId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "satelliteName": {
+            "type": "string"
+          },
+          "toSensorId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "toSensorName": {
+            "type": "string"
+          }
+        }
+      },
+      "SensorScheduleRequest": {
+        "type": "object",
+        "description": "Request payload for multi-station sensor network tracking schedule generation.",
+        "required": [
+          "sensors",
+          "satelliteIds"
+        ],
+        "properties": {
+          "durationDays": {
+            "type": "number",
+            "format": "double",
+            "description": "Forecast window duration in days [0.1, 14.0] (defaults to 3.0)",
+            "nullable": true
+          },
+          "satelliteIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "List of satellite IDs to schedule (max 20)"
+          },
+          "sensors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SensorDefinition"
+            },
+            "description": "List of ground stations / optical sensors in the network (max 10)"
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Start epoch for schedule (defaults to current time if omitted)",
+            "nullable": true
+          }
+        }
+      },
+      "SensorScheduleResponse": {
+        "type": "object",
+        "description": "Response payload containing network schedule and handover events.",
+        "required": [
+          "start",
+          "end",
+          "totalPasses",
+          "passes",
+          "handovers"
+        ],
+        "properties": {
+          "end": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "handovers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SensorHandover"
+            }
+          },
+          "passes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScheduledSensorPass"
+            }
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "totalPasses": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
       "SignupRequest": {
         "type": "object",
         "description": "Request body for developer account registration.",
@@ -4554,6 +5026,33 @@
           }
         }
       },
+      "SingleSensorPassesRequest": {
+        "type": "object",
+        "description": "Request payload for single-sensor pass evaluation with custom horizon and mount limits.",
+        "required": [
+          "sensor",
+          "satelliteId"
+        ],
+        "properties": {
+          "durationDays": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "satelliteId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sensor": {
+            "$ref": "#/components/schemas/SensorDefinition"
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        }
+      },
       "Tle": {
         "type": "object",
         "required": [
@@ -4566,6 +5065,32 @@
           },
           "lineTwo": {
             "type": "string"
+          }
+        }
+      },
+      "TrackingRates": {
+        "type": "object",
+        "description": "Angular tracking rates and radial Doppler velocity at an instant.",
+        "required": [
+          "rangeRateKms",
+          "azimuthRateDegS",
+          "elevationRateDegS"
+        ],
+        "properties": {
+          "azimuthRateDegS": {
+            "type": "number",
+            "format": "double",
+            "description": "Azimuth angular tracking rate in deg/s"
+          },
+          "elevationRateDegS": {
+            "type": "number",
+            "format": "double",
+            "description": "Elevation angular tracking rate in deg/s"
+          },
+          "rangeRateKms": {
+            "type": "number",
+            "format": "double",
+            "description": "Slant range rate in km/s (negative = approaching, positive = receding)"
           }
         }
       },
@@ -4706,6 +5231,10 @@
     {
       "name": "Astrodynamics",
       "description": "Multi-satellite and celestial space domain awareness (SDA) calculations"
+    },
+    {
+      "name": "Sensors",
+      "description": "Ground station, optical telescope, and radar sensor network tracking schedules"
     },
     {
       "name": "Pipelines",
